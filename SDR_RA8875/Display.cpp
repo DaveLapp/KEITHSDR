@@ -3,7 +3,7 @@
 //
 #include "SDR_RA8875.h"
 #include "RadioConfig.h"
-//#include "Display.h"
+#include "Display.h"
 
 #ifdef USE_RA8875
 	extern RA8875 tft;
@@ -35,14 +35,27 @@ extern struct AGC agc_set[];
 extern struct NB nb[];
 extern struct Modes_List modeList[];
 extern struct TuneSteps tstep[];
+extern bool   MeterInUse;  // S-meter flag to block updates while the MF knob has control
+extern uint8_t MF_client;  // Flag for current owner of MF knob services
 
+void ringMeter(int val, int minV, int maxV, int16_t x, int16_t y, uint16_t r, const char* units, uint16_t colorScheme,uint16_t backSegColor,int16_t angle,uint8_t inc);
+void drawAlert(int x, int y , int side, boolean draw);
+void setTextDatum(uint8_t d);
+int drawCentreString(const char *string, int dX, int poY, int font);
+void setTextPadding(uint16_t x_width);
+int16_t textWidth(const char *string, int font);
+int drawString(const char *string, int poX, int poY, int font);
+unsigned int rainbow(byte value);
 void _triangle_helper(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint16_t color, bool filled);
+void drawQuad(int16_t x0, int16_t y0,int16_t x1, int16_t y1,int16_t x2, int16_t y2,int16_t x3, int16_t y3, uint16_t color);
+void fillQuad(int16_t x0, int16_t y0,int16_t x1, int16_t y1,int16_t x2, int16_t y2, int16_t x3, int16_t y3, uint16_t color, bool triangled) ;
 
 struct User_Settings *pTX = &user_settings[user_Profile];
 struct Frequency_Display *pVAct  = &disp_Freq[0];     // pointer to Active VFO Digits record
 struct Frequency_Display *pMAct  = &disp_Freq[1];     // pointer to Active VFO Label record
 struct Frequency_Display *pVStby = &disp_Freq[2];     // pointer to Standby VFO Digits record
 struct Frequency_Display *pMStby = &disp_Freq[3];     // pointer to Standby VFO Label record
+
 
 uint8_t	_textMode = false;
 uint8_t _portrait = false;
@@ -59,7 +72,7 @@ uint8_t _colorIndex = 0;
 	inline uint16_t htmlTo565(int32_t color_) { return (uint16_t)(((color_ & 0xF80000) >> 8) | ((color_ & 0x00FC00) >> 5) | ((color_ & 0x0000F8) >> 3));}
 	inline void 	Color565ToRGB(uint16_t color, uint8_t &r, uint8_t &g, uint8_t &b){r = (((color & 0xF800) >> 11) * 527 + 23) >> 6; g = (((color & 0x07E0) >> 5) * 259 + 33) >> 6; b = ((color & 0x001F) * 527 + 23) >> 6;}
 
-void displayFreq(void)
+COLD void displayFreq(void)
 { 
 	// bx					// X - upper left corner anchor point
 	// by					// Y - upper left corner anchor point
@@ -80,7 +93,11 @@ void displayFreq(void)
 	
 	// Put a box around the VFO section (use BLACK to turn it off)
 	//tft.drawRect(pVAct->bx-1, pVAct->by-1, pVAct->bw+2, pVAct->bh+pVStby->bh+4, pVAct->box_clr);
-	tft.drawLine(0, pVAct->bh+pVStby->bh+10, pMAct->bx+pMAct->bw, pVAct->bh+pVStby->bh+10, RA8875_LIGHT_ORANGE);
+	#ifdef USE_RA8875
+	tft.drawLine(0, pVAct->bh+pVStby->bh+12, pMAct->bx+pMAct->bw, pVAct->bh+pVStby->bh+12, RA8875_LIGHT_ORANGE); // for 8875
+	#else
+	tft.drawLine(10, pVAct->bh+pVStby->bh+12, pMAct->bx+pMAct->bw+130, pVAct->bh+pVStby->bh+12, RA8875_LIGHT_ORANGE);  // For 8876
+	#endif // USE_RA8875
 	//tft.drawRect(0, 15, 192, 65, RA8875_LIGHT_ORANGE);
 	
 	// Draw Active VFO box and Label
@@ -94,7 +111,7 @@ void displayFreq(void)
 	tft.drawRect(pVStby->bx, pVStby->by, pVStby->bw, pVStby->bh, pVStby->ol_clr);
 	tft.fillRect(pMStby->bx, pMStby->by, pMStby->bw, pMStby->bh, pMStby->bg_clr);
 	tft.drawRect(pMStby->bx, pMStby->by, pMStby->bw, pMStby->bh, pMStby->ol_clr);
-	
+
 	// Write the Active VFO
 	tft.setFont(pMAct->txt_Font);
 	tft.setCursor(pMAct->bx+pMAct->padx, pMAct->by+pMAct->pady);
@@ -125,7 +142,7 @@ void displayFreq(void)
       lcd.print(formatVFO(VFOB));
     #endif
 	}
-	
+
 	// Write the standby VFO
 	tft.setFont(pMStby->txt_Font);
 	tft.setCursor(pMStby->bx+pMStby->padx, pMStby->by+pMStby->pady);
@@ -150,7 +167,7 @@ void displayFreq(void)
 	}
 }
 
-void displayMode(void)
+COLD void displayMode(void)
 {
 	uint8_t mode;
 
@@ -164,28 +181,33 @@ void displayMode(void)
 	draw_2_state_Button(MODE_BTN, &mode);
 }
 
-void displayFilter(void)
+COLD void displayFilter(void)
 {
 	char str[15];
 
-	sprintf(str, "F: %s%s", filter[bandmem[curr_band].filter].Filter_name,filter[bandmem[curr_band].filter].units);	
-	Serial.print("Tune Rate is "); Serial.println(str);	
+	#ifdef PANADAPTER
+		extern int16_t filterWidth;
+		sprintf(str, "F: %dHz", filterWidth);	
+	#else
+		sprintf(str, "F: %s%s", filter[bandmem[curr_band].filter].Filter_name,filter[bandmem[curr_band].filter].units);	
+	#endif
+	Serial.print(F("Filter is ")); Serial.println(str);
 	sprintf(labels[FILTER_LBL].label, "%s", str);
 	drawLabel(FILTER_LBL, &bandmem[curr_band].filter);
 	draw_2_state_Button(FILTER_BTN, &bandmem[curr_band].filter);
 }
 
-void displayRate(void)
+COLD void displayRate(void)
 {	
 	if (bandmem[curr_band].tune_step >= TS_STEPS)
 		bandmem[curr_band].tune_step = TS_STEPS-1;
 	sprintf(labels[RATE_LBL].label, "R: %s%s", tstep[bandmem[curr_band].tune_step].ts_name, tstep[bandmem[curr_band].tune_step].ts_units);;
-	Serial.print("Tune Rate is "); Serial.println(labels[RATE_LBL].label);
+	Serial.print(F("Tune Rate is ")); Serial.println(labels[RATE_LBL].label);
 	drawLabel(RATE_LBL, &bandmem[curr_band].tune_step);
 	draw_2_state_Button(RATE_BTN, &bandmem[curr_band].tune_step);
 }
 
-void displayAgc(void)
+COLD void displayAgc(void)
 {	
 	sprintf(std_btn[AGC_BTN].label, "%s", agc_set[bandmem[curr_band].agc_mode].agc_name);
 	sprintf(labels[AGC_LBL].label, "%s", agc_set[bandmem[curr_band].agc_mode].agc_name);
@@ -194,21 +216,29 @@ void displayAgc(void)
 	draw_2_state_Button(AGC_BTN, &bandmem[curr_band].agc_mode);
 }
 
-void displayANT(void)
+COLD void displayANT(void)
 {	
 	sprintf(std_btn[ANT_BTN].label, "%s%1d", "ANT", bandmem[curr_band].ant_sw);
 	sprintf(labels[ANT_LBL].label, "%s%1d", "ANT", bandmem[curr_band].ant_sw);
-	Serial.print("Antenna Switch set to "); Serial.println(std_btn[ANT_BTN].label);
+	Serial.print(F("Antenna Switch set to ")); Serial.println(std_btn[ANT_BTN].label);
 	drawLabel(ANT_LBL, &bandmem[curr_band].ant_sw);
 	draw_2_state_Button(ANT_BTN, &bandmem[curr_band].ant_sw);
 }
 
-void displayRFgain(void)
+COLD void displayRFgain(void)
 {	
+	char string[80];   // print format stuff
 	sprintf(std_btn[RFGAIN_BTN].label, "%s%3d", "RF:", user_settings[user_Profile].rfGain);
 	//sprintf(labels[RFGAIN_LBL].label, "%s%3d", "RF:", user_settings[user_Profile].rfGain);
 	//drawLabel(RFGAIN_LBL, &user_settings[user_Profile].rfGain);
-	Serial.print("RF Gain set to "); Serial.println(std_btn[RFGAIN_BTN].label);
+    if (MF_client == RFGAIN_BTN) 
+	{ 
+		//MF_default_is_active = false;
+		sprintf(string, " RF:%d", user_settings[user_Profile].rfGain);
+		MeterInUse = true;
+		displayMeter(user_settings[user_Profile].rfGain/10, string, 5);   // val, string label, color scheme
+	}
+	Serial.print(F("RF Gain set to ")); Serial.println(std_btn[RFGAIN_BTN].label);
 	draw_2_state_Button(RFGAIN_BTN, &user_settings[user_Profile].rfGain_en);
   #ifdef I2C_LCD
     lcd.setCursor(10,1);
@@ -216,12 +246,19 @@ void displayRFgain(void)
   #endif
 }
 
-void displayAFgain(void)
+COLD void displayAFgain(void)
 {	
+	char string[80];   // print format stuff
 	sprintf(std_btn[AFGAIN_BTN].label, "%s%3d", "AF:", user_settings[user_Profile].afGain);
 	//sprintf(labels[AFGAIN_LBL].label, "%s%3d", "AF:", user_settings[user_Profile].afGain);
 	//drawLabel(AFGAIN_LBL, &user_settings[user_Profile].afGain);
-	Serial.print("AF Gain set to "); Serial.println(std_btn[AFGAIN_BTN].label);
+	if (MF_client == AFGAIN_BTN) 
+	{ 
+		sprintf(string, " AF:%d", user_settings[user_Profile].afGain);
+        MeterInUse = true;
+    	displayMeter(user_settings[user_Profile].afGain/10, string, 5);   // val, string label, color scheme        
+	}
+	Serial.print(F("AF Gain set to ")); Serial.println(std_btn[AFGAIN_BTN].label);
 	draw_2_state_Button(AFGAIN_BTN, &user_settings[user_Profile].afGain_en);
   #ifdef I2C_LCD  
     lcd.setCursor(0,1);
@@ -229,74 +266,100 @@ void displayAFgain(void)
   #endif
 }
 
-void displayAttn()
+COLD void displayAttn()
 {
+	char string[80];   // print format stuff
 	sprintf(std_btn[ATTEN_BTN].label, "%s%3d", "ATT:", bandmem[curr_band].attenuator_dB);
-	Serial.print("Atten is "); Serial.println(bandmem[curr_band].attenuator);
+	Serial.print(F("Atten is ")); Serial.println(bandmem[curr_band].attenuator);
+	if (MF_client == ATTEN_BTN) 
+	{ 
+		sprintf(string, " ATT:%d", bandmem[curr_band].attenuator_dB);
+        MeterInUse = true;
+    	displayMeter(bandmem[curr_band].attenuator_dB/3, string, 5);   // val, string label, color scheme        
+	}
 	drawLabel(ATTEN_LBL, &bandmem[curr_band].attenuator);
 	draw_2_state_Button(ATTEN_BTN, &bandmem[curr_band].attenuator);
 }
 
-void displayPreamp()
+COLD void displayPreamp()
 {
-	Serial.print("Preamp is "); Serial.println(bandmem[curr_band].preamp);
+	Serial.print(F("Preamp is ")); Serial.println(bandmem[curr_band].preamp);
 	drawLabel(PREAMP_LBL, &bandmem[curr_band].preamp);
 	draw_2_state_Button(PREAMP_BTN, &bandmem[curr_band].preamp);
 }
 
-void displayATU()
+COLD void displayATU()
 {
-	Serial.print("ATU is "); Serial.println(bandmem[curr_band].ATU);
+	Serial.print(F("ATU is ")); Serial.println(bandmem[curr_band].ATU);
 	drawLabel(ATU_LBL, &bandmem[curr_band].ATU);
 	draw_2_state_Button(ATU_BTN, &bandmem[curr_band].ATU);
 }
 
-void displayRIT()
+COLD void displayRIT()
 {
-	Serial.print("RIT is "); Serial.println(bandmem[curr_band].RIT_en);
+	Serial.print(F("RIT is ")); Serial.println(bandmem[curr_band].RIT_en);
 	drawLabel(RIT_LBL, &bandmem[curr_band].RIT_en);
 	draw_2_state_Button(RIT_BTN, &bandmem[curr_band].RIT_en);
 }
 
-void displayXIT()
+COLD void displayXIT()
 {
-	Serial.print("XIT is "); Serial.println(bandmem[curr_band].XIT_en);
+	Serial.print(F("XIT is ")); Serial.println(bandmem[curr_band].XIT_en);
 	drawLabel(XIT_LBL, &bandmem[curr_band].XIT_en);
 	draw_2_state_Button(XIT_BTN, &bandmem[curr_band].XIT_en);
 }
 
-void displayFine()
+COLD void displayFine()
 {
-	Serial.print("Fine Tune is "); Serial.println(user_settings[user_Profile].fine);
+	Serial.print(F("Fine Tune is ")); Serial.println(user_settings[user_Profile].fine);
 	drawLabel(FINE_LBL, &user_settings[user_Profile].fine);
 	draw_2_state_Button(FINE_BTN,  &user_settings[user_Profile].fine);
 }
 
-void displayNB()
+COLD void displayNB()
 {
+	char string[80];   // print format stuff
 	sprintf(std_btn[NB_BTN].label, "NB-%s", nb[user_settings[user_Profile].nb_level].nb_name);
     sprintf(labels[NB_LBL].label,  "NB-%s", nb[user_settings[user_Profile].nb_level].nb_name);
-	Serial.print("NB is "); Serial.print(user_settings[user_Profile].nb_en);
-	Serial.print("   NB Level is "); Serial.println(user_settings[user_Profile].nb_level);
+	Serial.print(F("NB is ")); Serial.print(user_settings[user_Profile].nb_en);
+	Serial.print(F("   NB Level is ")); Serial.println(user_settings[user_Profile].nb_level);
+	if (MF_client == NB_BTN) 
+	{ 
+		sprintf(string, "  NB:%d", user_settings[user_Profile].nb_level);
+        MeterInUse = true;
+    	displayMeter(user_settings[user_Profile].nb_level, labels[NB_LBL].label, 5);   // val, string label, color scheme        
+	}
 	drawLabel(NB_LBL, &user_settings[user_Profile].nb_en);
 	draw_2_state_Button(NB_BTN, &user_settings[user_Profile].nb_en);
 }
 
-void displayNR()
+COLD void displayRefLevel()
 {
-	Serial.print("NR is "); Serial.println(user_settings[user_Profile].nr_en);
+	char string[80];   // print format stuff
+	if (MF_client == REFLVL_BTN) 
+	{ 
+		sprintf(string, "Lvl:%d", bandmem[curr_band].sp_ref_lvl);
+		MeterInUse = true; 
+		displayMeter((abs(bandmem[curr_band].sp_ref_lvl)-110)/10, string, 5);   // val, string label, color scheme
+	}
+	draw_2_state_Button(REFLVL_BTN, &std_btn[REFLVL_BTN].enabled); 
+}
+
+COLD void displayNR()
+{
+	Serial.print(F("NR is ")); Serial.println(user_settings[user_Profile].nr_en);
 	drawLabel(NR_LBL, &user_settings[user_Profile].nr_en);
 	draw_2_state_Button(NR_BTN, &user_settings[user_Profile].nr_en);
 }
 
-void displayNotch()
+COLD void displayNotch()
 {
-	Serial.print("Notch is "); Serial.println(std_btn[NOTCH_BTN].label);
+	Serial.print(F("Notch is ")); Serial.println(std_btn[NOTCH_BTN].label);
 	drawLabel(NOTCH_LBL, &user_settings[user_Profile].notch);
 	draw_2_state_Button(NOTCH_BTN,  &user_settings[user_Profile].notch);
 }
 
-void displaySplit()
+COLD void displaySplit()
 {
 	char sp_label[15];
 
@@ -312,12 +375,12 @@ void displaySplit()
 		sprintf(sp_label, "%s %s", std_btn[SPLIT_BTN].label, "Off");
 		sprintf(labels[SPLIT_LBL].label, "%s",  sp_label);
 	}
-	Serial.print("Split is "); Serial.println(bandmem[curr_band].split);
+	Serial.print(F("Split is ")); Serial.println(bandmem[curr_band].split);
 	drawLabel(SPLIT_LBL, &bandmem[curr_band].split);
 	draw_2_state_Button(SPLIT_BTN, &bandmem[curr_band].split);
 }
 
-void displayTime(void)
+COLD void displayTime(void)
 {
 	sprintf(std_btn[UTCTIME_BTN].label, "UTC:%02d:%02d:%02d", hour(), minute(), second());
 	//tft.print(std_btn[UTCTIME_BTN].label);
@@ -325,20 +388,34 @@ void displayTime(void)
 	draw_2_state_Button(UTCTIME_BTN, &std_btn[UTCTIME_BTN].show);	
 }
 
-// These buttons have no associated labels so are simly button updates
-void displayMenu() 		{draw_2_state_Button(MENU_BTN, &std_btn[MENU_BTN].enabled);				}
-void displayFn() 		{draw_2_state_Button(FN_BTN, &std_btn[FN_BTN].enabled);					}
-void displayVFO_AB() 	{draw_2_state_Button(VFO_AB_BTN, &bandmem[curr_band].VFO_AB_Active);	}
-void displayBandUp() 	{draw_2_state_Button(BANDUP_BTN, &bandmem[curr_band].band_num);			}
-void displayBand() 		{draw_2_state_Button(BAND_BTN, &bandmem[curr_band].band_num);			}
-void displaySpot() 		{draw_2_state_Button(SPOT_BTN,  &user_settings[user_Profile].spot);		}
-void displayBandDn()	{draw_2_state_Button(BANDDN_BTN, &bandmem[curr_band].band_num);			}
-void displayDisplay()	{draw_2_state_Button(DISPLAY_BTN, &display_state);						}
-void displayXMIT()		{draw_2_state_Button(XMIT_BTN, &user_settings[user_Profile].xmit);		}
-void displayMute()		{draw_2_state_Button(MUTE_BTN, &user_settings[user_Profile].mute);		}
-void displayXVTR()		{draw_2_state_Button(XVTR_BTN, &bandmem[curr_band].xvtr_en);			}
-void displayEnet()		{draw_2_state_Button(ENET_BTN, &user_settings[user_Profile].enet_output); }
-void displayRefLevel()  {draw_2_state_Button(REFLVL_BTN, &std_btn[REFLVL_BTN].enabled); 		}
+COLD void displayMeter(int val, const char *string, uint16_t colorscheme)
+{
+	#ifdef USE_RA8875
+	   	ringMeter(val, 0, 10, std_btn[SMETER_BTN].bx+20, std_btn[SMETER_BTN].by+10, std_btn[SMETER_BTN].bh-50, string, colorscheme, 1, 90, 8);
+	#else
+		ringMeter(val, 0, 10, std_btn[SMETER_BTN].bx+20, std_btn[SMETER_BTN].by+10, std_btn[SMETER_BTN].bh-50, string, colorscheme, 1, 90, 8);
+	#endif
+	static uint8_t startup_flag = 0;
+	if (startup_flag == 0)
+	{
+		draw_2_state_Button(SMETER_BTN, &std_btn[SMETER_BTN].show);
+		startup_flag = 1;  // only draw this box on startup then write smeter direct. The button fills the inside each update so cannot use it.
+	}
+}
+
+// These buttons have no associated labels so are simply button updates
+COLD void displayMenu() 		{draw_2_state_Button(MENU_BTN, &std_btn[MENU_BTN].enabled);			}
+COLD void displayFn() 		{draw_2_state_Button(FN_BTN, &std_btn[FN_BTN].enabled);					}
+COLD void displayVFO_AB() 	{draw_2_state_Button(VFO_AB_BTN, &bandmem[curr_band].VFO_AB_Active);	}
+COLD void displayBandUp() 	{draw_2_state_Button(BANDUP_BTN, &bandmem[curr_band].band_num);			}
+COLD void displayBand() 		{draw_2_state_Button(BAND_BTN, &bandmem[curr_band].band_num);		}
+COLD void displaySpot() 		{draw_2_state_Button(SPOT_BTN,  &user_settings[user_Profile].spot);	}
+COLD void displayBandDn()	{draw_2_state_Button(BANDDN_BTN, &bandmem[curr_band].band_num);			}
+COLD void displayDisplay()	{draw_2_state_Button(DISPLAY_BTN, &display_state);						}
+COLD void displayXMIT()		{draw_2_state_Button(XMIT_BTN, &user_settings[user_Profile].xmit);		}
+COLD void displayMute()		{draw_2_state_Button(MUTE_BTN, &user_settings[user_Profile].mute);		}
+COLD void displayXVTR()		{draw_2_state_Button(XVTR_BTN, &bandmem[curr_band].xvtr_en);			}
+COLD void displayEnet()		{draw_2_state_Button(ENET_BTN, &user_settings[user_Profile].enet_output);}
 
 //
 //------------------------------------  drawButton ------------------------------------------------------------------------
@@ -351,7 +428,7 @@ void displayRefLevel()  {draw_2_state_Button(REFLVL_BTN, &std_btn[REFLVL_BTN].en
 //  Notes:  Default is to handle 2 states today. However, the control function can change the buttom text
 //			and set a value in the button's enabled field to track states.
 //
-void draw_2_state_Button(uint8_t button, uint8_t *function_ptr) 
+COLD void draw_2_state_Button(uint8_t button, uint8_t *function_ptr) 
 {
     struct Standard_Button *ptr = std_btn + button;     // pointer to button object passed by calling function
 	
@@ -381,7 +458,7 @@ void draw_2_state_Button(uint8_t button, uint8_t *function_ptr)
 	}
 }
 
-void drawLabel(uint8_t lbl_num, uint8_t *function_ptr)
+COLD void drawLabel(uint8_t lbl_num, uint8_t *function_ptr)
 {
 	struct Label *plabel = labels + lbl_num;
 
@@ -423,7 +500,7 @@ void drawLabel(uint8_t lbl_num, uint8_t *function_ptr)
 //
 //    formatVFO()
 //
-const char* formatVFO(uint32_t vfo)
+COLD const char* formatVFO(uint32_t vfo)
 {
 	static char vfo_str[25];
 	
@@ -442,7 +519,7 @@ const char* formatVFO(uint32_t vfo)
 //  Usage: This function calls all of the displayXXX() functions to easily refresh the
 //			screen except for the spectrum display module.
 // 
-void displayRefresh(void)
+COLD void displayRefresh(void)
 {
 	// Bottom Panel Anchor button
 	displayFn();   // make fn=1 to call displayFn() to prevent calling itself
@@ -451,6 +528,7 @@ void displayRefresh(void)
 	if (enet_ready)
 		displayTime();
 	#endif
+	//displayMeter();
 	// Panel 1 buttons
 	displayMode();
 	displayFilter();
@@ -487,14 +565,102 @@ void displayRefresh(void)
 	displayRefLevel();
 }
 
-#ifndef USE_RA8875
+//#ifndef USE_RA8875
+
+/*
+ An example showing 'ring' analogue meter on a RA8875/8876 TFT
+ color screen
+
+ Needs Fonts 2, 4 and 7 (also Font 6 if using a large size meter)
+ */
+
+// Meter colour schemes
+#define RED2RED 0
+#define GREEN2GREEN 1
+#define BLUE2BLUE 2
+#define BLUE2RED 3
+#define GREEN2RED 4
+#define RED2GREEN 5
+
+uint16_t  textcolor   = 0xFFFF;
+uint16_t  textbgcolor = 0x0000;
+uint16_t _width    = tft.width();
+uint16_t _height   = tft.height();
+uint8_t textsize  = 1;
+uint8_t padX = 0;
+bool textwrap  = true;
+uint8_t textdatum = 0; // Left text alignment is default
+uint32_t runTime = -99999;       // time for next update
+
+int reading = 0; // Value to be displayed
+int d = 0; // Variable used for the sinewave test waveform
+boolean alert = 0;
+int8_t ramp = 1;
+
+//These enumerate the text plotting alignment (reference datum point)
+#define TL_DATUM 0 // Top left (default)
+#define TC_DATUM 1 // Top centre
+#define TR_DATUM 2 // Top right
+#define ML_DATUM 3 // Middle left
+#define CL_DATUM 3 // Centre left, same as above
+#define MC_DATUM 4 // Middle centre
+#define CC_DATUM 4 // Centre centre, same as above
+#define MR_DATUM 5 // Middle right
+#define CR_DATUM 5 // Centre right, same as above
+#define BL_DATUM 6 // Bottom left
+#define BC_DATUM 7 // Bottom centre
+#define BR_DATUM 8 // Bottom right
+
+uint16_t  addr_row = 0xFFFF;
+uint16_t  addr_col = 0xFFFF;
+uint16_t  win_xe = 0xFFFF;
+uint16_t  win_ye = 0xFFFF;
+
+#ifdef LOAD_GLCD
+  fontsloaded = 0x0002; // Bit 1 set
+#endif
+
+#ifdef LOAD_FONT2
+  fontsloaded |= 0x0004; // Bit 2 set
+#endif
+
+#ifdef LOAD_FONT4
+  fontsloaded |= 0x0010; // Bit 4 set
+#endif
+
+#ifdef LOAD_FONT6
+  fontsloaded |= 0x0040; // Bit 6 set
+#endif
+
+#ifdef LOAD_FONT7
+  fontsloaded |= 0x0080; // Bit 7 set
+#endif
+
+#ifdef LOAD_FONT8
+  fontsloaded |= 0x0100; // Bit 8 set
+#endif
+
+typedef struct {
+  const unsigned char *chartbl;
+  const unsigned char *widthtbl;
+  unsigned       char height;
+} fontinfo;
+
+// This is a structure to conveniently hold infomation on the fonts
+// Stores font character image address pointer, width table and height
+
+const fontinfo fontdata [] = {
+   { 0, 0, 0 },
+   { 0, 0, 8 }
+};
+
 /**************************************************************************/
 /*!
 	  calculate a grandient color
 	  return a spectrum starting at blue to red (0...127)
 */
 /**************************************************************************/
-uint16_t grandient(uint8_t val)
+COLD uint16_t grandient(uint8_t val)
 {
 	uint8_t r = 0;
 	uint8_t g = 0;
@@ -532,7 +698,7 @@ uint16_t grandient(uint8_t val)
 	  div:divisions between color1 and color 2
 */
 /**************************************************************************/
-uint16_t colorInterpolation(uint8_t r1,uint8_t g1,uint8_t b1,uint8_t r2,uint8_t g2,uint8_t b2,uint16_t pos,uint16_t div)
+COLD uint16_t colorInterpolation(uint8_t r1,uint8_t g1,uint8_t b1,uint8_t r2,uint8_t g2,uint8_t b2,uint16_t pos,uint16_t div)
 {
     if (pos == 0) return Color565(r1,g1,b1);
     if (pos >= div) return Color565(r2,g2,b2);
@@ -544,7 +710,6 @@ uint16_t colorInterpolation(uint8_t r1,uint8_t g1,uint8_t b1,uint8_t r2,uint8_t 
 	);
 }
 
-#ifdef LATER1
 /**************************************************************************/
 /*!
       ringMeter 
@@ -578,7 +743,7 @@ uint16_t colorInterpolation(uint8_t r1,uint8_t g1,uint8_t b1,uint8_t r2,uint8_t 
 	  inc: 			5...20 (5:solid, 20:sparse divisions, default:10)
 */
 /**************************************************************************/
-void ringMeter(int val, int minV, int maxV, int16_t x, int16_t y, uint16_t r, const char* units, uint16_t colorScheme,uint16_t backSegColor,int16_t angle,uint8_t inc)
+COLD void ringMeter(int val, int minV, int maxV, int16_t x, int16_t y, uint16_t r, const char* units, uint16_t colorScheme,uint16_t backSegColor,int16_t angle,uint8_t inc)
 {
 	if (inc < 5) inc = 5;
 	if (inc > 20) inc = 20;
@@ -592,9 +757,11 @@ void ringMeter(int val, int minV, int maxV, int16_t x, int16_t y, uint16_t r, co
 	uint16_t w = r / 4;    // Width of outer ring is 1/4 of radius
 	const uint8_t seg = 5; // Segments are 5 degrees wide = 60 segments for 300 degrees
 	// Draw colour blocks every inc degrees
-	for (int16_t i = -angle; i < angle; i += inc) {
+	for (int16_t i = -angle; i < angle; i += inc) 
+	{
 		colour = RA8875_BLACK;
-		switch (colorScheme) {
+		switch (colorScheme) 
+		{
 			case 0:
 				colour = RA8875_RED;
 				break; // Fixed colour
@@ -649,53 +816,94 @@ void ringMeter(int val, int minV, int maxV, int16_t x, int16_t y, uint16_t r, co
 		int16_t x3 = xEnd * r + x;
 		int16_t y3 = yEnd * r + y;
 
-		if (i < curAngle) { // Fill in coloured segments with 2 triangles
-			fillQuad(x0, y0, x1, y1, x2, y2, x3, y3, colour, false);
-		} else {// Fill in blank segments
-			fillQuad(x0, y0, x1, y1, x2, y2, x3, y3, backSegColor, false);
+		if (i < curAngle) 
+		{ 
+			// Fill in coloured segments with 2 triangles
+			switch (colorScheme) 
+			{
+				case 0: colour = RA8875_RED; break; // Fixed colour
+				case 1: colour = RA8875_GREEN; break; // Fixed colour
+				case 2: colour = RA8875_BLUE; break; // Fixed colour
+				case 3: colour = rainbow(map(i, -angle, angle, 0, 127)); break; // Full spectrum blue to red
+				case 4: colour = rainbow(map(i, -angle, angle, 70, 127)); break; // Green to red (high temperature etc)
+				case 5: colour = rainbow(map(i, -angle, angle, 127, 63)); break; // Red to green (low battery etc)
+			   default: colour = RA8875_BLUE; break; // Fixed colour
+			}
+			tft.fillTriangle(x0, y0, x1, y1, x2, y2, colour);
+			tft.fillTriangle(x1, y1, x2, y2, x3, y3, colour);
+			//static int16_t text_color = colour; // Save the last colour drawn
 		}
+		else // Fill in blank segments
+		{
+			tft.fillTriangle(x0, y0, x1, y1, x2, y2, BLACK);
+			tft.fillTriangle(x1, y1, x2, y2, x3, y3, BLACK);
+		}
+
 	}
+	// Convert value to a string
+	char buf[10];
+	byte len = 3; if (val > 999) len = 5;
+	dtostrf(val, len, 0, buf);
+	buf[len] = ' '; buf[len+1] = 0; // Add blanking space and terminator, helps to centre text too!
+	//Set the text colour to default
+	tft.setTextSize(1);
+	tft.setFont(Arial_14);
+	/*   Not using this overange feature - could change the S-Unit text color though
+	if (val<minV || val>maxV) 
+	{
+		drawAlert(x,y+90,50,1);
+	}
+	else 
+	{
+		drawAlert(x,y+90,50,0);
+	}
+	*/
+	tft.setTextColor(BLUE, BLACK);
+	// Uncomment next line to set the text colour to the last segment value!
+	//tft.setTextColor(colour, RA8875_BLACK);
+	x -= 32;
+	y -= 8;
+	tft.setCursor(x,y);
+	tft.fillRect(x,y,75,14,BLACK);  // Clear text space
+	tft.print(units);
+
+	//setTextDatum(MC_DATUM);
+	// Print value, if the meter is large then use big font 8, othewise use 4
+	//if (r > 84) 
+	//{
+		//setTextPadding(55*3); // Allow for 3 digits each 55 pixels wide
+		//drawString(buf, x, y, 8); // Value in middle
+	//}
+	//else 
+	//{
+		//setTextPadding(3 * 14); // Allow for 3 digits each 14 pixels wide
+		//setTextPadding(55*3); // Allow for 3 digits each 55 pixels wide
+		//drawString(buf, x, y, 4); // Value in middle
+	//}
+
+	//tft.setTextSize(1);
+	//setTextPadding(0);
+	// Print units, if the meter is large then use big font 4, othewise use 2
+	//tft.setTextColor(RA8875_WHITE, RA8875_BLACK);
+	//if (r > 84)
+	//{ 
+		//tft.printf(buf, x, y, 4); // Value in middle
+		//drawString(units, x, y + 60, 4); // Units display
+		//tft.setCursor(x,y);
+		//tft.print(units);
+	//}
+	//else 
+	//{
+		//tft.printf(units, x, y + 15, 2); // Units display
+		//drawString(units, x, y + 15, 2); // Units display
+		//tft.setCursor(x,y);
+		//tft.print(units);
+	//}
+}
 
 /**************************************************************************/
 /*!
-      Draw filled circle
-	  Parameters:
-      x0: The 0-based x location of the center of the circle
-      y0: The 0-based y location of the center of the circle
-      r: radius
-      color: RGB565 color
-*/
-/**************************************************************************/
-/*
-void RA8875::fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
-{
-	_center_helper(x0,y0);
-	if (r <= 0) return;
-	_circle_helper(x0, y0, r, color, true);
-}
-*/
-		
-	//inline __attribute__((always_inline)) 	
-	void _center_helper(int16_t &x, int16_t &y)
-		__attribute__((always_inline)) {
-			if (x == CENTER) x = _width/2;
-			if (y == CENTER) y = _height/2;
-	}
-
-void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
-{
-	_center_helper(x0,y0);
-	if (r < 1) return;
-	if (r == 1) {
-		drawPixel(x0,y0,color);
-		return;
-	}
-	_circle_helper(x0, y0, r, color, true);
-}
-
-/**************************************************************************/
-/*!
-      Draw a quadrilater by connecting 4 points
+      Draw a quadrilateral by connecting 4 points
 	  Parameters:
 	  x0:
 	  y0:
@@ -708,513 +916,392 @@ void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
       color: RGB565 color
 */
 /**************************************************************************/
-void drawQuad(int16_t x0, int16_t y0,int16_t x1, int16_t y1,int16_t x2, int16_t y2,int16_t x3, int16_t y3, uint16_t color) 
+COLD void drawQuad(int16_t x0, int16_t y0,int16_t x1, int16_t y1,int16_t x2, int16_t y2,int16_t x3, int16_t y3, uint16_t color) 
 {
-	drawLine(x0, y0, x1, y1, color);//low 1
-	drawLine(x1, y1, x2, y2, color);//high 1
-	drawLine(x2, y2, x3, y3, color);//high 2
-	drawLine(x3, y3, x0, y0, color);//low 2
+	tft.drawLine(x0, y0, x1, y1, color);//low 1
+	tft.drawLine(x1, y1, x2, y2, color);//high 1
+	tft.drawLine(x2, y2, x3, y3, color);//high 2
+	tft.drawLine(x3, y3, x0, y0, color);//low 2
 }
 
-/*
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-+					GEOMETRIC PRIMITIVE HELPERS STUFF								 +
-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-*/
-/**************************************************************************/
-/*!
-      helper function for circles
-	  [private]
-*/
-/**************************************************************************/
-void _circle_helper(int16_t x0, int16_t y0, int16_t r, uint16_t color, bool filled)//0.69b32 fixed an undocumented hardware limit
+COLD void drawAlert(int x, int y , int side, boolean draw)
 {
-	if (_portrait) swapvals(x0,y0);//0.69b21
-
-	if (r < 1) r = 1;
-	if (r < 2) {//NEW
-		drawPixel(x0,y0,color);
-		return;
-	}
-	if (r > RA8876_HEIGHT / 2) r = (RA8876_HEIGHT / 2) - 1;//this is the (undocumented) hardware limit of RA8875
-	
-	if (_textMode) _setTextMode(false);//we are in text mode?
-	#if defined(USE_RA8876_SEPARATE_TEXT_COLOR)
-		_TXTrecoverColor = true;
-	#endif
-	if (color != _foreColor) setForegroundColor(color);//0.69b30 avoid several SPI calls
-	
-	_writeRegister(RA8876_DCHR0,    x0 & 0xFF);
-	_writeRegister(RA8876_DCHR0 + 1,x0 >> 8);
-
-	_writeRegister(RA8876_DCVR0,    y0 & 0xFF);
-	_writeRegister(RA8876_DCVR0 + 1,y0 >> 8);	   
-	_writeRegister(RA8876_DCRR,r); 
-
-	writeCommand(RA8876_DCR);
-	#if defined(_FASTCPU)
-		_slowDownSPI(true);
-	#endif
-	filled == true ? _writeData(RA8876_DCR_CIRCLE_START | RA8876_DCR_FILL) : _writeData(RA8876_DCR_CIRCLE_START | RA8876_DCR_NOFILL);
-	_waitPoll(RA8876_DCR, RA8876_DCR_CIRCLE_STATUS, _RA8876_WAITPOLL_TIMEOUT_DCR_CIRCLE_STATUS);//ZzZzz
-	#if defined(_FASTCPU)
-		_slowDownSPI(false);
-	#endif
+  if (draw && !alert) {
+    tft.fillTriangle(x, y, x+30, y+47, x-30, y+47, rainbow(95));
+    tft.setTextColor(RA8875_BLACK);
+    drawCentreString("!", x, y + 6, 4);
+    alert = 1;
+  }
+  else if (!draw) {
+    tft.fillTriangle(x, y, x+30, y+47, x-30, y+47, RA8875_BLACK);
+    alert = 0;
+  }
 }
 
-
-/**************************************************************************/
-/*!
-		helper function for rects (filled or not)
-		[private]
-*/
-/**************************************************************************/
-/*
-void RA8875::_rect_helper(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color, bool filled)
+// #########################################################################
+// Return a 16 bit rainbow colour
+// #########################################################################
+COLD unsigned int rainbow(byte value)
 {
-	if (w < 0 || h < 0) return;//why draw invisible rects?(MrTOM temp fix)
-	if (w >= _width) return;
-	if (h >= _height) return;
-	
-	if (_portrait) {swapvals(x,y); swapvals(w,h);}
+  // Value is expected to be in range 0-127
+  // The value is converted to a spectrum colour from 0 = blue through to 127 = red
 
-	_checkLimits_helper(x,y);
+  byte red = 0; // Red is the top 5 bits of a 16 bit colour value
+  byte green = 0;// Green is the middle 6 bits
+  byte blue = 0; // Blue is the bottom 5 bits
 
-	if (_textMode) _setTextMode(false);//we are in text mode?
-	#if defined(USE_RA8875_SEPARATE_TEXT_COLOR)
-		_TXTrecoverColor = true;
-	#endif
-	if (color != _foreColor) setForegroundColor(color);
-	
-	_line_addressing(x,y,w,h);
+  byte quadrant = value / 32;
 
-	writeCommand(RA8875_DCR);
-	filled == true ? _writeData(0xB0) : _writeData(0x90);
-	_waitPoll(RA8875_DCR, RA8875_DCR_LINESQUTRI_STATUS);
-}
-*/
-
-void _rect_helper(int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint16_t color, bool filled)
-{
-	if (_portrait) {swapvals(x1,y1); swapvals(x2,y2);}
-	if ((x1 < 0 && x2 < 0) || (x1 >= RA8875_WIDTH && x2 >= RA8875_WIDTH) ||
-	    (y1 < 0 && y2 < 0) || (y1 >= RA8875_HEIGHT && y2 >= RA8875_HEIGHT))
-		return;	// All points are out of bounds, don't draw anything
-
-	_checkLimits_helper(x1,y1);	// Truncate rectangle that is off screen, still draw remaining rectangle
-	_checkLimits_helper(x2,y2);
-
-	if (_textMode) _setTextMode(false);	//we are in text mode?
-	#if defined(USE_RA8875_SEPARATE_TEXT_COLOR)
-		_TXTrecoverColor = true;
-	#endif
-	if (color != _foreColor) setForegroundColor(color);
-	
-	if (x1==x2 && y1==y2)		// Width & height can still be 1 pixel, so render as a pixel
-		drawPixel(x1,y1,color);
-	else {
-		_line_addressing(x1,y1,x2,y2);
-
-		writeCommand(RA8876_DCR);
-		filled == true ? _writeData(0xB0) : _writeData(0x90);
-		_waitPoll(RA8876_DCR, RA8876_DCR_LINESQUTRI_STATUS, _RA8876_WAITPOLL_TIMEOUT_DCR_LINESQUTRI_STATUS);
-	}
+  if (quadrant == 0) {
+    blue = 31;
+    green = 2 * (value % 32);
+    red = 0;
+  }
+  if (quadrant == 1) {
+    blue = 31 - (value % 32);
+    green = 63;
+    red = 0;
+  }
+  if (quadrant == 2) {
+    blue = 0;
+    green = 63;
+    red = value % 32;
+  }
+  if (quadrant == 3) {
+    blue = 0;
+    green = 63 - 2 * (value % 32);
+    red = 31;
+  }
+  return (red << 11) + (green << 5) + blue;
 }
 
+// #########################################################################
+// Return a value in range -1 to +1 for a given phase angle in degrees
+// #########################################################################
+COLD float sineWave(int phase) {
+  return sin(phase * 0.0174532925);
+}
 
-/**************************************************************************/
-/*!
-      helper function for triangles
-	  [private]
-*/
-/**************************************************************************/
-void _triangle_helper(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint16_t color, bool filled)
+/***************************************************************************************
+** Function name:           setTextDatum
+** Description:             Set the text position reference datum
+***************************************************************************************/
+COLD void setTextDatum(uint8_t d)
 {
-	if (x0 >= _width || x1 >= _width || x2 >= _width) return;
-	if (y0 >= _height || y1 >= _height || y2 >= _height) return;
-	
-	if (_portrait) {swapvals(x0,y0); swapvals(x1,y1); swapvals(x2,y2);}
-	/*
-	if (x0 == x1 && y0 == y1){
-		drawLine(x0, y0, x2, y2,color);
-		return;
-	} else if (x0 == x2 && y0 == y2){
-		drawLine(x0, y0, x1, y1,color);
-		return;
-	} else if (x0 == x1 && y0 == y1 && x0 == x2 && y0 == y2) {//new
-        drawPixel(x0, y0, color);
-		return;
-	}
-	*/
-	/*
-	if (y0 > y1) {swapvals(y0, y1); swapvals(x0, x1);}			// Sort points from Y < to >
-	if (y1 > y2) {swapvals(y2, y1); swapvals(x2, x1);}
-	if (y0 > y1) {swapvals(y0, y1); swapvals(x0, x1);}
-	*/
-/*	
-	if (y0 == y2) { // Handle awkward all-on-same-line case as its own thing
-		int16_t a, b;
-        a = b = x0;
-		if (x1 < a) {     
-			a = x1;
-		} else if (x1 > b) {
-			b = x1;
-		}
-        if (x2 < a) { 
-			a = x2;
-		} else if (x2 > b) {
-			b = x2;
-		}
-        drawFastHLine(a, y0, b-a+1, color);
-        return;
+  textdatum = d;
+}
+
+/***************************************************************************************
+** Function name:           setTextPadding
+** Description:             Define padding width (aids erasing old text and numbers)
+***************************************************************************************/
+COLD void setTextPadding(uint16_t x_width)
+{
+  padX = x_width;
+}
+
+/***************************************************************************************
+** Function name:           drawString
+** Description :            draw string with padding if it is defined
+***************************************************************************************/
+COLD int drawString(const char *string, int poX, int poY, int font)
+{
+  	int16_t sumX = 0;
+  	uint8_t padding = 1;
+  	unsigned int cheight = 0;
+	_width = tft.width();
+	_height = tft.height();
+
+  	if (textdatum || padX)
+  	{
+    	// Find the pixel width of the string in the font
+    	unsigned int cwidth  = textWidth(string, font);
+
+    	// Get the pixel height of the font
+    	cheight = pgm_read_byte( &fontdata[font].height ) * textsize;
+
+    switch(textdatum) {
+      case TC_DATUM:
+        poX -= cwidth/2;
+        padding = 2;
+        break;
+      case TR_DATUM:
+        poX -= cwidth;
+        padding = 3;
+        break;
+      case ML_DATUM:
+        poY -= cheight/2;
+        padding = 1;
+        break;
+      case MC_DATUM:
+        poX -= cwidth/2;
+        poY -= cheight/2;
+        padding = 2;
+        break;
+      case MR_DATUM:
+        poX -= cwidth;
+        poY -= cheight/2;
+        padding = 3;
+        break;
+      case BL_DATUM:
+        poY -= cheight;
+        padding = 1;
+        break;
+      case BC_DATUM:
+        poX -= cwidth/2;
+        poY -= cheight;
+        padding = 2;
+        break;
+      case BR_DATUM:
+        poX -= cwidth;
+        poY -= cheight;
+        padding = 3;
+        break;
     }
-*/	
+	Serial.println("PARMS=");
+	Serial.println(_width);
+Serial.println(_height);
+    // Check coordinates are OK, adjust if not
+    if (poX < 0) poX = 0;
+    if (poX+cwidth>_width)   poX = _width - cwidth;
+    if (poY < 0) poY = 0;
+    if (poY+cheight>_height) poY = _height - cheight;
+  }
+Serial.println(poX);
+Serial.println(poY);
+  //while (*string) sumX += drawChar(*(string++), poX+sumX, poY, font);
+  tft.setCursor(poX+sumX, poY);
+  tft.setFont(Arial_14);
+  tft.setTextColor(RA8875_WHITE, RA8875_BLACK);
+  while (*string) sumX += tft.print(*(string++));
+//#define PADDING_DEBUG
 
-	// Avoid drawing lines here due to hardware bug in certain circumstances when a
-	// specific shape triangle is drawn after a line. This bug can still happen, but
-	// at least the user has control over fixing it.
-	// Not drawing a line here is slower, but drawing a non-filled "triangle" is
-	// slightly faster than a filled "triangle".
-	//
-	// bug example: tft.drawLine(799,479, 750,50, RA8875_BLUE)
-	//              tft.fillTriangle(480,152, 456,212, 215,410, RA8875_GREEN)
-	// MrTom
-	//
-	if (x0 == x1 && y0 == y1 && x0 == x2 && y0 == y2) {			// All points are same
-		drawPixel(x0,y0, color);
-		return;
-	} else if ((x0 == x1 && y0 == y1) || (x0 == x2 && y0 == y2) || (x1 == x2 && y1 == y2)){
-		filled = false;									// Two points are same
-	} else if (x0 == x1 && x0 == x2){
-		filled = false;									// Vertical line
-	} else if (y0 == y1 && y0 == y2){
-		filled = false;									// Horizontal line
-	}
-	if (filled){
-		if (_check_area(x0,y0, x1,y1, x2,y2) < 0.9) {
-			filled = false;			// Draw non-filled triangle to avoid filled triangle bug when two vertices are close together.
-		}
-	}
+#ifndef PADDING_DEBUG
+  if((padX>sumX) && (textcolor!=textbgcolor))
+  {
+    int padXc = poX+sumX; // Maximum left side padding
+    switch(padding) {
+      case 1:
+        tft.fillRect(padXc,poY,padX-sumX,cheight, textbgcolor);
+        break;
+      case 2:
+        tft.fillRect(padXc,poY,(padX-sumX)>>1,cheight, textbgcolor);
+        padXc = (padX-sumX)>>1;
+        if (padXc>poX) padXc = poX;
+        tft.fillRect(poX - padXc,poY,(padX-sumX)>>1,cheight, textbgcolor);
+        break;
+      case 3:
+        if (padXc>padX) padXc = padX;
+        tft.fillRect(poX + sumX - padXc,poY,padXc-sumX,cheight, textbgcolor);
+        break;
+    }
+  }
+#else
 
-	if (_textMode) _setTextMode(false);//we are in text mode?
-	
-	#if defined(USE_RA8876_SEPARATE_TEXT_COLOR)
-		_TXTrecoverColor = true;
-	#endif
-	if (color != _foreColor) setForegroundColor(color);//0.69b30 avoid several SPI calls
-	
-	//_checkLimits_helper(x0,y0);
-	//_checkLimits_helper(x1,y1);
-	
-	_line_addressing(x0,y0,x1,y1);
-	//p2
+  // This is debug code to show text (green box) and blanked (white box) areas
+  // to show that the padding areas are being correctly sized and positioned
+  if((padX>sumX) && (textcolor!=textbgcolor))
+  {
+    int padXc = poX+sumX; // Maximum left side padding
+    tft.drawRect(poX,poY,sumX,cheight, GREEN);
+    switch(padding) {
+      case 1:
+        tft.drawRect(padXc,poY,padX-sumX,cheight, WHITE);
+        break;
+      case 2:
+        tft.drawRect(padXc,poY,(padX-sumX)>>1, cheight, WHITE);
+        padXc = (padX-sumX)>>1;
+        if (padXc>poX) padXc = poX;
+        tft.drawRect(poX - padXc,poY,(padX-sumX)>>1,cheight, WHITE);
+        break;
+      case 3:
+        if (padXc>padX) padXc = padX;
+        tft.drawRect(poX + sumX - padXc,poY,padXc-sumX,cheight, WHITE);
+        break;
+    }
+  }
+#endif
 
-	_writeRegister(RA8876_DTPH0,    x2 & 0xFF);
-	_writeRegister(RA8876_DTPH0 + 1,x2 >> 8);
-	_writeRegister(RA8876_DTPV0,    y2 & 0xFF);
-	_writeRegister(RA8876_DTPV0 + 1,y2 >> 8);
-	
-	writeCommand(RA8876_DCR);
-	filled == true ? _writeData(0xA1) : _writeData(0x81);
-	
-	_waitPoll(RA8876_DCR, RA8876_DCR_LINESQUTRI_STATUS, _RA8876_WAITPOLL_TIMEOUT_DCR_LINESQUTRI_STATUS);
+return sumX;
 }
 
-/**************************************************************************/
-/*!
-		Graphic line addressing helper
-		[private]
-*/
-/**************************************************************************/
-void _line_addressing(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+/***************************************************************************************
+** Function name:           drawCentreString
+** Descriptions:            draw string centred on dX
+***************************************************************************************/
+COLD int drawCentreString(const char *string, int dX, int poY, int font)
 {
-	//X0
-	_writeRegister(RA8876_DLHSR0,    x0 & 0xFF);
-	_writeRegister(RA8876_DLHSR0 + 1,x0 >> 8);
-	//Y0
-	_writeRegister(RA8876_DLVSR0,    y0 & 0xFF);
-	_writeRegister(RA8876_DLVSR0 + 1,y0 >> 8);
-	//X1
-	_writeRegister(RA8876_DLHER0,    x1 & 0xFF);
-	_writeRegister(RA8876_DLHER0 + 1,x1 >> 8);
-	//Y1
-	_writeRegister(RA8876_DLVER0,    y1 & 0xFF);
-	_writeRegister(RA8876_DLVER0 + 1,y1 >> 8);
+  byte tempdatum = textdatum;
+  int sumX = 0;
+  textdatum = TC_DATUM;
+  sumX = drawString(string, dX, poY, font);
+  textdatum = tempdatum;
+  return sumX;
 }
 
-/**************************************************************************/
-/*!	
-		curve addressing helper
-		[private]
-*/
-/**************************************************************************/
-void _curve_addressing(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+/***************************************************************************************
+** Function name:           drawRightString
+** Descriptions:            draw string right justified to dX
+***************************************************************************************/
+COLD int drawRightString(const char *string, int dX, int poY, int font)
 {
-	//center
-	_writeRegister(RA8876_DEHR0,    x0 & 0xFF);
-	_writeRegister(RA8876_DEHR0 + 1,x0 >> 8);
-	_writeRegister(RA8876_DEVR0,    y0 & 0xFF);
-	_writeRegister(RA8876_DEVR0 + 1,y0 >> 8);
-	//long,short ax
-	_writeRegister(RA8876_ELL_A0,    x1 & 0xFF);
-	_writeRegister(RA8876_ELL_A0 + 1,x1 >> 8);
-	_writeRegister(RA8876_ELL_B0,    y1 & 0xFF);
-	_writeRegister(RA8876_ELL_B0 + 1,y1 >> 8);
+  byte tempdatum = textdatum;
+  int sumX = 0;
+  textdatum = TR_DATUM;
+  sumX = drawString(string, dX, poY, font);
+  textdatum = tempdatum;
+  return sumX;
 }
 
-/**************************************************************************/
-/*!	
-		sin e cos helpers
-		[private]
-*/
-/**************************************************************************/
-float _cosDeg_helper(float angle)
+/***************************************************************************************
+** Function name:           textWidth
+** Description:             Return the width in pixels of a string in a given font
+***************************************************************************************/
+COLD int16_t textWidth(const char *string, int font)
 {
-	float radians = angle / (float)360 * 2 * PI;
-	return cos(radians);
+  unsigned int str_width  = 0;
+  char uniCode;
+  char *widthtable;
+
+  if (font>1 && font<9)
+  //widthtable = (char *)pgm_read_word( &(fontdata[font].widthtbl ) ) - 32; //subtract the 32 outside the loop
+  widthtable = (char *)( &(fontdata[font].widthtbl ) ) - 32; //subtract the 32 outside the loop
+  else return 0;
+
+  while (*string)
+  {
+    uniCode = *(string++);
+#ifdef LOAD_GLCD
+    if (font == 1) str_width += 6;
+    else
+#endif
+    str_width += (int) (widthtable + uniCode); // Normally we need to subract 32 from uniCode
+  }
+  return str_width * textsize;
 }
 
-float _sinDeg_helper(float angle)
+/***************************************************************************************
+** Function name:           fillCircle
+** Description:             draw a filled circle
+***************************************************************************************/
+COLD void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
 {
-	float radians = angle / (float)360 * 2 * PI;
-	return sin(radians);
+  tft.drawFastVLine(x0, y0 - r, r + r + 1, color);
+  //fillCircleHelper(x0, y0, r, 3, 0, color);
 }
 
-/**************************************************************************/
-/*!	
-		change the arc default parameters
-*/
-/**************************************************************************/
-void setArcParams(float arcAngleMax, int arcAngleOffset)
+/***************************************************************************************
+** Function name:           fillCircleHelper
+** Description:             Support function for filled circle drawing
+***************************************************************************************/
+
+// Used to do circles and roundrects
+COLD void fillCircleHelper(int16_t x0, int16_t y0, int16_t r, uint8_t cornername, int16_t delta, uint16_t color)
 {
-	_arcAngle_max = arcAngleMax;
-	_arcAngle_offset = arcAngleOffset;
+  int16_t f     = 1 - r;
+  int16_t ddF_x = 1;
+  int16_t ddF_y = -r - r;
+  int16_t x     = 0;
+
+  delta++;
+  while (x < r) {
+    if (f >= 0) {
+      r--;
+      ddF_y += 2;
+      f     += ddF_y;
+    }
+    x++;
+    ddF_x += 2;
+    f     += ddF_x;
+
+    if (cornername & 0x1) {
+      tft.drawFastVLine(x0 + x, y0 - r, r + r + delta, color);
+      tft.drawFastVLine(x0 + r, y0 - x, x + x + delta, color);
+    }
+    if (cornername & 0x2) {
+      tft.drawFastVLine(x0 - x, y0 - r, r + r + delta, color);
+      tft.drawFastVLine(x0 - r, y0 - x, x + x + delta, color);
+    }
+  }
 }
 
-/**************************************************************************/
-/*!	
-		change the angle offset parameter from default one
-*/
-/**************************************************************************/
-void setAngleOffset(int16_t angleOffset)
+/***************************************************************************************
+** Function name:           drawCircle
+** Description:             Draw a circle outline
+***************************************************************************************/
+COLD void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
 {
-	_angle_offset = ANGLE_OFFSET + angleOffset;
+  int16_t f = 1 - r;
+  int16_t ddF_x = 1;
+  int16_t ddF_y = - r - r;
+  int16_t x = 0;
+
+  //fastSetup();
+
+  tft.drawPixel(x0 + r, y0  , color);
+  tft.drawPixel(x0 - r, y0  , color);
+  tft.drawPixel(x0  , y0 - r, color);
+  tft.drawPixel(x0  , y0 + r, color);
+
+  while (x < r) {
+    if (f >= 0) {
+      r--;
+      ddF_y += 2;
+      f += ddF_y;
+    }
+    x++;
+    ddF_x += 2;
+    f += ddF_x;
+
+    tft.drawPixel(x0 + x, y0 + r, color);
+    tft.drawPixel(x0 - x, y0 + r, color);
+    tft.drawPixel(x0 - x, y0 - r, color);
+    tft.drawPixel(x0 + x, y0 - r, color);
+
+    tft.drawPixel(x0 + r, y0 + x, color);
+    tft.drawPixel(x0 - r, y0 + x, color);
+    tft.drawPixel(x0 - r, y0 - x, color);
+    tft.drawPixel(x0 + r, y0 - x, color);
+  }
 }
 
-/**************************************************************************/
-/*! PRIVATE
-		Write in a register
-		Parameters:
-		reg: the register
-		val: the data
-*/
-/**************************************************************************/
-void _writeRegister(const uint8_t reg, uint8_t val) 
+/***************************************************************************************
+** Function name:           drawCircleHelper
+** Description:             Support function for circle drawing
+***************************************************************************************/
+COLD void drawCircleHelper( int16_t x0, int16_t y0, int16_t r, uint8_t cornername, uint16_t color)
 {
-	writeCommand(reg);
-	_writeData(val);
+  int16_t f     = 1 - r;
+  int16_t ddF_x = 1;
+  int16_t ddF_y = -2 * r;
+  int16_t x     = 0;
+
+  while (x < r) {
+    if (f >= 0) {
+      r--;
+      ddF_y += 2;
+      f     += ddF_y;
+    }
+    x++;
+    ddF_x += 2;
+    f     += ddF_x;
+    if (cornername & 0x4) {
+      tft.drawPixel(x0 + x, y0 + r, color);
+      tft.drawPixel(x0 + r, y0 + x, color);
+    }
+    if (cornername & 0x2) {
+      tft.drawPixel(x0 + x, y0 - r, color);
+      tft.drawPixel(x0 + r, y0 - x, color);
+    }
+    if (cornername & 0x8) {
+      tft.drawPixel(x0 - r, y0 + x, color);
+      tft.drawPixel(x0 - x, y0 + r, color);
+    }
+    if (cornername & 0x1) {
+      tft.drawPixel(x0 - r, y0 - x, color);
+      tft.drawPixel(x0 - x, y0 - r, color);
+    }
+  }
 }
 
-
-/**************************************************************************/
-/*!
-		Write data
-		Parameters:
-		d: the data
-*/
-/**************************************************************************/
-void _writeData(uint8_t data) 
-{
-	startSend();
-	#if defined(___DUESTUFF) && defined(SPI_DUE_MODE_EXTENDED)
-		SPI.transfer(_cs, RA8875_DATAWRITE, SPI_CONTINUE); 
-		SPI.transfer(_cs, data, SPI_LAST);
-	#else
-		#if (defined(__AVR__) && defined(_FASTSSPORT)) || defined(SPARK)
-			_spiwrite(RA8875_DATAWRITE);
-			_spiwrite(data);
-		#else
-			#if defined(__MK64FX512__) || defined(__MK66FX1M0__)  || defined(__IMXRT1062__) || defined(__MKL26Z64__)
-				_pspi->transfer(RA8876_DATAWRITE);
-				_pspi->transfer(data);
-			#else
-				SPI.transfer(RA8875_DATAWRITE);
-				SPI.transfer(data);
-			#endif
-		#endif
-	#endif
-	_endSend();
-}
-
-/**************************************************************************/
-/*! PRIVATE
-		Write a command
-		Parameters:
-		d: the command
-*/
-/**************************************************************************/
-void writeCommand(const uint8_t d) 
-{
-	startSend();
-	#if defined(___DUESTUFF) && defined(SPI_DUE_MODE_EXTENDED)
-		SPI.transfer(_cs, RA8875_CMDWRITE, SPI_CONTINUE); 
-		SPI.transfer(_cs, d, SPI_LAST);
-	#else
-		#if (defined(__AVR__) && defined(_FASTSSPORT)) || defined(SPARK)
-			_spiwrite(RA8875_CMDWRITE);
-			_spiwrite(d);
-		#else
-			#if defined(__MK64FX512__) || defined(__MK66FX1M0__)  || defined(__IMXRT1062__) || defined(__MKL26Z64__)
-				_pspi->transfer(RA8875_CMDWRITE);
-				_pspi->transfer(d);
-			#else
-				SPI.transfer(RA8875_CMDWRITE);
-				SPI.transfer(d);
-			#endif
-		#endif
-	#endif
-	_endSend();
-}
-
-/**************************************************************************/
-/*!
-      Draw a filled quadrilater by connecting 4 points
-	  Parameters:
-	  x0:
-	  y0:
-	  x1:
-	  y1:
-	  x2:
-	  y2:
-	  x3:
-	  y3:
-      color: RGB565 color
-	  triangled: if true a full quad will be generated, false generate a low res quad (faster)
-	  *NOTE: a bug in _triangle_helper create some problem, still fixing....
-*/
-/**************************************************************************/
-void fillQuad(int16_t x0, int16_t y0,int16_t x1, int16_t y1,int16_t x2, int16_t y2, int16_t x3, int16_t y3, uint16_t color, bool triangled) 
-{
-	  _triangle_helper(x0, y0, x1, y1, x2, y2, color,true);
-	  if (triangled) _triangle_helper(x2, y2, x3, y3, x0, y0, color,true);
-      _triangle_helper(x1, y1, x2, y2, x3, y3, color,true);
-}
-
-
-/**************************************************************************/
-/*!
-      Fill the ActiveWindow by using a specified RGB565 color
-	  Parameters:
-	  color: RGB565 color (default=BLACK)
-*/
-/**************************************************************************/
-void fillWindow(uint16_t color)
-{  
-	_line_addressing(0,0,RA8876_WIDTH-1, RA8876_HEIGHT-1);
-	setForegroundColor(color);
-	writeCommand(RA8876_DCR);
-	_writeData(0xB0);
-	_waitPoll(RA8876_DCR, RA8876_DCR_LINESQUTRI_STATUS, _RA887_WAITPOLL_TIMEOUT_DCR_LINESQUTRI_STATUS);
-	#if defined(USE_RA8876_SEPARATE_TEXT_COLOR)
-		_TXTrecoverColor = true;
-	#endif
-}
-
-/**************************************************************************/
-/*!
-      clearScreen it's different from fillWindow because it doesn't depends
-	  from the active window settings so it will clear all the screen.
-	  It should be used only when needed since it's slower than fillWindow.
-	  parameter:
-	  color: 16bit color (default=BLACK)
-*/
-/**************************************************************************/
-void clearScreen(uint16_t color)//0.69b24
-{  
-	setActiveWindow();
-	fillWindow(color);
-}
-
-/**************************************************************************/
-/*!
-      Draw circle
-	  Parameters:
-      x0: The 0-based x location of the center of the circle
-      y0: The 0-based y location of the center of the circle
-      r: radius
-      color: RGB565 color
-*/
-/**************************************************************************/
-void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
-{
-	_center_helper(x0,y0);
-	if (r < 1) return;
-	if (r < 2) {
-		drawPixel(x0,y0,color);
-		return;
-	}
-	_circle_helper(x0, y0, r, color, false);
-}
-
-
-/**************************************************************************/
-/*!
-      Draw filled circle
-	  Parameters:
-      x0: The 0-based x location of the center of the circle
-      y0: The 0-based y location of the center of the circle
-      r: radius
-      color: RGB565 color
-*/
-/**************************************************************************/
-/*
-void RA8875::fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
-{
-	_center_helper(x0,y0);
-	if (r <= 0) return;
-	_circle_helper(x0, y0, r, color, true);
-}
-*/
-
-void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color)
-{
-	_center_helper(x0,y0);
-	if (r < 1) return;
-	if (r == 1) {
-		drawPixel(x0,y0,color);
-		return;
-	}
-	_circle_helper(x0, y0, r, color, true);
-}
-
-/**************************************************************************/
-/*!
-      Draw a filled curve
-      Parameters:
-      xCenter:]   x location of the ellipse center
-      yCenter:   y location of the ellipse center
-      longAxis:  Size in pixels of the long axis
-      shortAxis: Size in pixels of the short axis
-      curvePart: Curve to draw in clock-wise dir: 0[180-270�],1[270-0�],2[0-90�],3[90-180�]
-      color: RGB565 color
-*/
-/**************************************************************************/
-void fillCurve(int16_t xCenter, int16_t yCenter, int16_t longAxis, int16_t shortAxis, uint8_t curvePart, uint16_t color)
-{
-	curvePart = curvePart % 4; //limit to the range 0-3
-	if (_portrait) {//fix a problem with rotation
-		if (curvePart == 0) {
-			curvePart = 2;
-		} else if (curvePart == 2) {
-			curvePart = 0;
-		}
-	}
-	_ellipseCurve_helper(xCenter, yCenter, longAxis, shortAxis, curvePart, color, true);
-}
-
-#endif // LATER
-
-
-
-#endif  // USE_RA8875
-
+//	#endif // ifndef USE_RA8875

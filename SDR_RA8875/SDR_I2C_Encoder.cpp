@@ -16,6 +16,9 @@ extern uint8_t curr_band;     // global tracks our current band setting.
 extern uint8_t user_Profile;  // global tracks our current user profile
 extern struct User_Settings user_settings[];
 extern struct Band_Memory bandmem[];
+extern bool MeterInUse;  // S-meter flag to block updates while the MF knob has control
+extern Metro MF_Timeout;
+Metro press_timer = Metro(600);
 
 //Class initialization with the I2C addresses - add more here if needed
 //i2cEncoderLibV2 i2c_encoder[2] = { i2cEncoderLibV2(0x62), i2cEncoderLibV2(0x61)};
@@ -40,11 +43,11 @@ void encoder_thresholds(i2cEncoderLibV2* obj);
 extern void MF_Service(int8_t counts, uint8_t knob);
 
 //Callback when the MF Gain encoder is rotated
-void encoder_rotated(i2cEncoderLibV2* obj) 
+COLD void encoder_rotated(i2cEncoderLibV2* obj) 
 {
 	uint8_t knob_assigned;
 
-	Serial.print("Encoder ID = ");
+	Serial.print(F("Encoder ID = "));
     Serial.println(obj->id);
 	
 	if (obj->id == user_settings[user_Profile].encoder1_client)
@@ -53,71 +56,136 @@ void encoder_rotated(i2cEncoderLibV2* obj)
 		knob_assigned = obj->id;
 
 	if (obj->readStatus(i2cEncoderLibV2::RINC))
-		Serial.print("Increment: ");
+		Serial.print(F("Increment: "));
 	else
-		Serial.print("Decrement: ");
+		Serial.print(F("Decrement: "));
 	int16_t count = obj->readCounterInt();
 	Serial.println(count);
 	MF_Service(count, knob_assigned);
 	//obj->writeCounter((int32_t) 0); // Reset the counter value if in absolute mode. Not required in relative mode
 	// Update the color
 	uint32_t tval = 0x00FF00;  // Set the default color to green
-	Serial.print("Knob Asssinged to ");
+	Serial.print(F("Knob Assigned to "));
     Serial.println(knob_assigned);
-	switch(knob_assigned)
+	if (0) //press_timer.check() == 1)
 	{
-		case RFGAIN_BTN:    if (user_settings[user_Profile].rfGain >= 97 || user_settings[user_Profile].rfGain <=3)
-								tval = 0xFF0000;  // Change to red
-								break;
-		case AFGAIN_BTN:    if (user_settings[user_Profile].afGain >= 97 || user_settings[user_Profile].afGain <=3)
-								tval = 0xFF0000;  // Change to red
-								break;
-		case ATTEN_BTN:     if (bandmem[curr_band].attenuator_dB > 30 || bandmem[curr_band].attenuator_dB < 2)
-								tval = 0xFF0000;  // Change to red
-								break;
-		case REFLVL_BTN:    if (bandmem[curr_band].sp_ref_lvl > -120 || bandmem[curr_band].sp_ref_lvl < -200)
-								tval = 0xFF0000;  // Change to red
-								break;
-		case NB_BTN:        if (user_settings[user_Profile].nb_level >= 5 || user_settings[user_Profile].nb_level <=1)
-								tval = 0xFF0000;  // Change to red
-								break;
-		default: obj->writeRGBCode(tval); break;
+		switch(knob_assigned)
+		{
+			case MFTUNE: 	break;
+			default: 		obj->writeRGBCode(tval); break;
+		}
+	}
+	else
+	{
+		switch(knob_assigned)
+		{
+			char string[80];   // print format stuff
+			case RFGAIN_BTN:    sprintf(string, " RF:%d", user_settings[user_Profile].rfGain);
+								MeterInUse = true;
+								displayMeter(user_settings[user_Profile].rfGain/10, string, 5);   // val, string label, color scheme							
+								if (user_settings[user_Profile].rfGain >= 97 || user_settings[user_Profile].rfGain <=3)								
+									tval = 0xFF0000;  // Change to red
+									break;
+			case AFGAIN_BTN:    sprintf(string, " AF:%d", user_settings[user_Profile].afGain);
+								MeterInUse = true;
+								displayMeter(user_settings[user_Profile].afGain/10, string, 5);   // val, string label, color scheme
+								if (user_settings[user_Profile].afGain >= 97 || user_settings[user_Profile].afGain <=3)
+									tval = 0xFF0000;  // Change to red
+									break;
+			case ATTEN_BTN:     sprintf(string, " ATT:%d", bandmem[curr_band].attenuator_dB);
+								MeterInUse = true;
+								displayMeter(bandmem[curr_band].attenuator_dB/3, string, 5);   // val, string label, color scheme
+								if (bandmem[curr_band].attenuator_dB > 30 || bandmem[curr_band].attenuator_dB < 2)
+									tval = 0xFF0000;  // Change to red
+									break;
+			case REFLVL_BTN:    sprintf(string, "Lvl:%d", bandmem[curr_band].sp_ref_lvl);
+								MeterInUse = true; 
+								displayMeter((abs(bandmem[curr_band].sp_ref_lvl)-110)/10, string, 5);   // val, string label, color scheme
+								if (bandmem[curr_band].sp_ref_lvl > -120 || bandmem[curr_band].sp_ref_lvl < -200)
+									tval = 0xFF0000;  // Change to red
+									break;
+			case NB_BTN:        sprintf(string, "  NB:%d", user_settings[user_Profile].nb_level);
+								MeterInUse = true;
+								displayMeter(user_settings[user_Profile].nb_level, string, 5);   // val, string label, color scheme
+								if (user_settings[user_Profile].nb_level >= 5 || user_settings[user_Profile].nb_level <=1)
+									tval = 0xFF0000;  // Change to red
+									break;
+			default: obj->writeRGBCode(tval); break;
+		}
 	}
 	obj->writeRGBCode(tval);  // set color
 }
 
 //Callback when the encoder is pushed
-void encoder_click(i2cEncoderLibV2* obj) {
-	Serial.println("Push: ");
+COLD void encoder_click(i2cEncoderLibV2* obj) 
+{
+	if (obj->id == user_settings[user_Profile].encoder1_client && press_timer.check() == 1)
+	{
+		VFO_AB();
+		Serial.println(F("Long MF Knob Push- Swap VFOs "));
+		obj->writeRGBCode(0x00FF00);
+	}
+	else if (obj->id == user_settings[user_Profile].encoder1_client)
+	{
+		Rate(0);
+		Serial.println(F("MF Knob Push to change Tune Rate "));
+		obj->writeRGBCode(0xFF0000);
+	}
+	else
+	{
+
+		Serial.println(F("Push: "));
+		obj->writeRGBCode(0x0000FF);
+	}
+	
+}
+
+//Callback when the encoder is first pushed, will start a timer to see if it was long or short
+COLD void encoder_timer_start(i2cEncoderLibV2* obj) {
+	Serial.println(F("Push Timer Start: "));
 	obj->writeRGBCode(0x0000FF);
+	press_timer.reset();
 }
 
 //Callback when the encoder reach the max or min
-void encoder_thresholds(i2cEncoderLibV2* obj) 
+COLD void encoder_thresholds(i2cEncoderLibV2* obj) 
 {
 	if (obj->readStatus(i2cEncoderLibV2::RMAX))
-		Serial.println("Max!");
+		Serial.println(F("Max!"));
 	else
-		Serial.println("Min!");
+		Serial.println(F("Min!"));
 	obj->writeRGBCode(0xFF0000);
 }
 
 //Callback when the fading process finish and set the RGB led off
-void encoder_fade(i2cEncoderLibV2* obj) 
+COLD void encoder_fade(i2cEncoderLibV2* obj) 
 {
+	uint8_t mfg; 
+	MF_ENC.updateStatus();
+	mfg = MF_ENC.readStatus();
+	Serial.print(F("****Checked MF_Enc (in FADE) status = ")); Serial.println(mfg);
+	//#ifdef MF_ENC_ADDR
+	// Check the status of the encoder (if enabled) and call the callback
+	//if(mfg == 0 && press_timer.check() == 1 && obj->id == user_settings[user_Profile].encoder1_client && user_settings[user_Profile].encoder1_client == MFTUNE)
+	//{     
+		//VFO_AB();
+		//Serial.println(F("Long MF Knob Push- Swap VFOs "));
+		//obj->writeRGBCode(0x00FF00);
+	//}
+	//#endif
   	obj->writeRGBCode(0x000000);
 }
 
-void set_I2CEncoders()
+COLD void set_I2CEncoders()
 {
     pinMode(I2C_INT_PIN, INPUT_PULLUP);
-    Serial.println("Setup ENC");
+    Serial.println(F("Setup ENC"));
 
 	#ifdef MF_ENC_ADDR
     // MF KNOB - Multi-Function knob setup.
 	if(user_settings[user_Profile].encoder1_client)  // 0 is no encoder assigned so skip this
 	{
-		Serial.println("MF Encoder Setup");
+		Serial.println(F("MF Encoder Setup"));
 		MF_ENC.reset();
 		delay(20);
 		MF_ENC.begin(
@@ -136,6 +204,7 @@ void set_I2CEncoders()
 		MF_ENC.onButtonRelease = encoder_click;
 		MF_ENC.onMinMax = encoder_thresholds;
 		MF_ENC.onFadeProcess = encoder_fade;
+		MF_ENC.onButtonPush = encoder_timer_start;
 		MF_ENC.writeAntibouncingPeriod(20); /* Set an anti-bouncing of 200ms */
 		//MF_ENC.writeInterruptConfig(0xff); /* Enable all the interrupt */
 		//MF_ENC.writeDoublePushPeriod(50); /*Set a period for the double push of 500ms */
@@ -150,7 +219,7 @@ void set_I2CEncoders()
 	// Encoder 2 setup
 	if(user_settings[user_Profile].encoder2_client)  // 0 if no encoder assigned so skip this
     {
-		Serial.println("Encoder #2 Setup");
+		Serial.println(F("Encoder #2 Setup"));
 		ENC2.reset();
 		delay(20);
 		ENC2.begin(
@@ -179,7 +248,7 @@ void set_I2CEncoders()
 	// Encoder 3 setup
 	if(user_settings[user_Profile].encoder3_client)  // 0 if no encoder assigned so skip this
     {
-		Serial.println("Encoder #3 Setup");
+		Serial.println(F("Encoder #3 Setup"));
 		ENC3.reset();
 		delay(20);
 		ENC3.begin(
@@ -206,7 +275,7 @@ void set_I2CEncoders()
 }
 
 #ifdef MF_ENC_ADDR
-void blink_MF_RGB(void)
+COLD void blink_MF_RGB(void)
 {
     /* blink the RGB LED */
     MF_ENC.writeRGBCode(0xFF0000);
@@ -216,13 +285,13 @@ void blink_MF_RGB(void)
     MF_ENC.writeRGBCode(0x0000FF);
     delay(250);
     MF_ENC.writeRGBCode(0x000000);
-	Serial.println("Blink MF RGB");
-    MF_ENC.writeFadeRGB(3); //Fade enabled with 3ms step
+	Serial.println(F("Blink MF RGB"));
+    MF_ENC.writeFadeRGB(2); //Fade enabled with 3ms step
 }
 #endif
 
 #ifdef ENC2_ADDR
-void blink_ENC2_RGB(void)
+COLD void blink_ENC2_RGB(void)
 {
     /* blink the RGB LED */
     ENC2.writeRGBCode(0xFF0000);
@@ -232,13 +301,13 @@ void blink_ENC2_RGB(void)
     ENC2.writeRGBCode(0x0000FF);
     delay(250);
     ENC2.writeRGBCode(0x000000);
-	Serial.println("Blink ENC2 RGB");
+	Serial.println(F("Blink ENC2 RGB"));
     ENC2.writeFadeRGB(3); //Fade enabled with 3ms step
 }
 #endif
 
 #ifdef ENC3_ADDR
-void blink_ENC3_RGB(void)
+COLD void blink_ENC3_RGB(void)
 {	
     /* blink the RGB LED */
     ENC3.writeRGBCode(0xFF0000);
@@ -248,7 +317,7 @@ void blink_ENC3_RGB(void)
     ENC3.writeRGBCode(0x0000FF);
     delay(250);
     ENC3.writeRGBCode(0x000000);
-	Serial.println("Blink ENC3 RGB");
+	Serial.println(F("Blink ENC3 RGB"));
     ENC3.writeFadeRGB(3); //Fade enabled with 3ms step
 }
 #endif

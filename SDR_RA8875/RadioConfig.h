@@ -16,7 +16,7 @@
 // Your connected hardware is the primary reason to change these.
 // Compiling in code that talks to an I2C device for example will hang if the device is not present.
 
-#define USE_RA8875        // Turns on support for RA8875 LCD TOcuhscreen Display with FT5204 Touch controller
+#define USE_RA8875          // Turns on support for RA8875 LCD TOcuhscreen Display with FT5204 Touch controller
                             // When commented out it will default to the RA8876 controller and FT5206 touch controller
                             // DEPENDS on correct display controller type conencted via 4-wire SPI bus.
 
@@ -62,7 +62,7 @@
                             // Hardware verson 2.1, Arduino library version 1.40.
 
 //#define USE_ENET_PROFILE  // This is inserted here to conveniently turn on ethernet profile for me using 1 setting.
-#ifdef USE_ENET_PROFILE           // Depends on ENET
+#ifdef USE_ENET_PROFILE     // Depends on ENET
     #define ENET
 #endif // USE_ENET_PROFILE
 
@@ -71,27 +71,70 @@
     #define ENET
 #endif  // REMOTE_OPS
 
-//#define TEST_SINEWAVE_SIG // Turns on sinewave generators for display in the spectrum FFT only.
+//#define TEST_SINEWAVE_SIG       // Turns on sinewave generators for display in the spectrum FFT only.
 
-#define SPECTRUM_PRESET 0   // The spectrum layout record default value.  
+#define SPECTRUM_PRESET  0        // The spectrum layout record default value.
+                                  // 0 is recommended for full screen.
+                                  // 5 for smaller 2 window size.
+
+//#define PANADAPTER          // Optimize some settings for panadapter use.  VFO becomes fixed LO at designated frequency
+                            // Comment this ouot to dispable all PANADAPTER settings.
+
+#define PANADAPTER_LO   8215000 // Frequency of radio's IF output in Hz. 
+                                // For a K3 it is 8215Khz for DATA A mode, 8212.5KHz if USB/LSB
+                                // Enabled only when the PANADAPTER define is active. Can be left uncommented.
+
+#define PANADAPTER_MODE_OFFSET_DATA 0    // This is the offset added by the radio in certain modes
+                                            // It is usually the Center frequency of the filter
+                                            // Enabled only when the PANADAPTER define is active. Can be left uncommented.
+
+//#define PANADAPTER_INVERT   // When uncommented, this inverts the tuning direction seen on screen.
+                            // Most radio IFs are inverted, though it can change depending on frequency
+                            // Enabled only when the PANADAPTER define is active. Can be left uncommented.
+
+//#define ALL_CAT           // Include support for reading radio info for PANADAPTER mode CAT control over serial port or other means
+                            // Intended for use in combination with PANADAPTER mode.  
+                            // Defining this without the PANADAPTER mode enabled may cause odd effects.
+                            // DEPENDS on PANADAPTER mode
+
+
+#define SCREEN_ROTATION   0 // 0 is normal horizontal landscape orientation  For RA8876 only at this point.
+                            // 2 is 180 flip.  This will affect the touch orientation so that must be set to match your display
+                            // The 7" RA8876 display has a better off center viewing angle when the "bottom" of hte display is mounted up.
+                            // "bottom" is defined here as the bottom of the text on the back of the display.
+                            // When the 7" is mounted bottom up, the touch panel flex connector will now face down.
+                            // This orients the touch coordiniates to be "normal" and corrections need to be turned off.
+//#define TOUCH_ROTATION    // if not defined (commented out) there is no correction, the bottom of the display is mounted up.                         
+                            // if defined (uncommented) correction is applied flipping the coordinates top to bottom.
 
 // K7MDL specific Build Configuration rolled up into one #define
-#define K7MDL_BUILD
+//#define K7MDL_BUILD
 //
 #ifdef K7MDL_BUILD 
     #ifdef USE_RA8875 
-     #undef USE_RA8875            // UNcomment this line to use RA8876
+      #undef USE_RA8875            // UN-comment this line to use RA8876      
+    #endif
+    #ifndef USE_RA8875
+      #undef SCREEN_ROTATION
+      #define SCREEN_ROTATION 2   // Rotate for the RA8876 for better view angle and no touch coordnmate correction required.
     #endif
     #define I2C_ENCODERS
-    //#define OCXO_10MHZ            // Switch to etherkits library and set to use ext ref input at 10MHz
-    #define si5351_TCXO             // set load cap to 0pF for TCXO
-    #define si5351_XTAL_25MHZ       // choose 25MHz tcxo or crystal, else 27Mhz
+    #define OCXO_10MHZ            // Switch to etherkits library and set to use ext ref input at 10MHz
+    //#define K7MDL_OCXO          // use teh si5351 C board with 10Mhz OCXO
+    #define si5351_TCXO             // Set load cap to 0pF for TCXO
+    #define si5351_XTAL_25MHZ       // Choose 25MHz tcxo or crystal, else 27Mhz
     #define USE_DHCP
     #define ENET
     #define USE_ENET_PROFILE
     //#define REMOTE_OPS
-    #define SV1AFN_BPF              // use the BPF board
-    #define DIG_STEP_ATT            // USe the step atten
+    #define SV1AFN_BPF              // Use the BPF board
+    #define DIG_STEP_ATT            // Use the step atten
+    #define PANADAPTER                // Enable panadapter mode
+    #ifdef PANADAPTER
+      #define ALL_CAT                 // Band decoder library - reads radio info only for many radios by many means, voltage, serial, bcd input
+      //#define FT817_CAT             // FT-817 control library - does full control and monitor for the FT-817
+      #define PANADAPTER_INVERT       // Invert spectrum for inverted IF tuning direction
+    #endif
 #endif  // K7MDL_BUILD
 //
 //--------------------------USER HARDWARE AND PREFERENCES---------------------------------------
@@ -163,7 +206,6 @@
 #define  RA8876_RESET      9    //any pin or nothing!
 #define  MAXTOUCHLIMIT     3    //1...5  using 3 for 3 finger swipes, otherwise 2 for pinches or just 1 for touch
 
-
 // From RA8875/_settings/RA8875ColorPresets.h
 // Colors preset (RGB565)
 const uint16_t	RA8875_BLACK            = 0x0000;
@@ -180,44 +222,7 @@ const uint16_t 	RA8875_DARK_ORANGE 		  = 0xFB60; // the experimentalist
 const uint16_t 	RA8875_PINK 			      = 0xFCFF; // M.Sandercock
 const uint16_t 	RA8875_PURPLE 			    = 0x8017; // M.Sandercock
 const uint16_t 	RA8875_GRAYSCALE 		    = 2113;//grayscale30 = RA8875_GRAYSCALE*30
-
-// From RA8876_t3/RA8876Registers.h
-#define BLACK		    0x0000
-#define WHITE		    0xffff
-#define RED		  	  0xf800
-#define LIGHTRED	  0xfc10
-#define CRIMSON		  0x8000
-#define GREEN		    0x07e0
-#define PALEGREEN	  0x87f0
-#define DARKGREEN	  0x0400
-#define BLUE		    0x001f
-#define LIGHTBLUE	  0x051f
-#define SKYBLUE		  0x841f
-#define DARKBLUE	  0x0010
-#define YELLOW		  0xffe0
-#define LIGHTYELLOW	0xfff0
-#define DARKYELLOW	0x8400 // mustard
-#define CYAN		    0x07ff
-#define LIGHTCYAN	  0x87ff
-#define DARKCYAN	  0x0410
-#define MAGENTA		  0xf81f
-#define VIOLET		  0xfc1f
-#define BLUEVIOLET	0x8010
-#define ORCHID		  0xA145 
-// Otehr sources of RGB coplpr definitions
-#define NAVY        0x000F
-#define MAROON      0x7800
-#define PURPLE      0x780F
-#define OLIVE       0x7BE0
-#define LIGHTGREY   0xC618
-#define DARKGREY    0x7BEF
-#define ORANGE      0xFD20
-#define GREENYELLOW 0xAFE5
-#define PINK        0xF81F
-    // Some defines for ease of use 
-  //#define myDARKGREY  31727u
 #endif // USE_RA8876_t3
-
 //
 //
 //------------------------------------  Ethernet UDP messaging section --------------------------
@@ -265,5 +270,15 @@ const uint16_t 	RA8875_GRAYSCALE 		    = 2113;//grayscale30 = RA8875_GRAYSCALE*3
   #define LCD_COL     20
   #define LCD_LINES   2
 #endif //I2C_LCD
+
+#ifdef  FT817_CAT
+  #define HWSERIAL Serial1 // Teensy hardware Serial or USB Serial port. Set this to the hardware serial port you wish to use
+  #include <ft817.h>
+  #include "SDR_CAT.h"
+#endif  // FT817_CAT
+
+#ifdef ALL_CAT
+  #include "SDR_CAT.h"
+#endif
 
 #endif //_RADIOCONFIG_H_

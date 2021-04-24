@@ -2,7 +2,7 @@
 #define _SDR_RA8875_
 //  SDR_RA8875.INO
 //
-//  Main PRogram File
+//  Main Program File
 //
 //  Spectrum, Display, full F32 library conversion completed 3/2021. Uses FFTXXXX_IQ_F32 FFT I and Q version files
 //      XXXX can be the 256, 1024, 2048 or 4096 versions.
@@ -16,7 +16,7 @@
 #include "SDR_RA8875.h"
 #include "SDR_Data.h"
 // Now pickup build time options from RadioConfig.h
-#include "RadioConfig.h"        // Majority of declarations here to drive teh #ifdefs that follow
+#include "RadioConfig.h"        // Majority of declarations here to drive the #ifdefs that follow
 
 #ifdef SV1AFN_BPF               // This turns on support for the Bandpass Filter board and relays for LNA and Attenuation
  #include <SVN1AFN_BandpassFilters.h> // Modified and redistributed in this build source folder
@@ -76,18 +76,29 @@ void RampVolume(float vol, int16_t rampType);
 void printHelp(void);
 void printCPUandMemory(unsigned long curTime_millis, unsigned long updatePeriod_millis);
 void respondToByte(char c);
-void rogerBeep(bool enable);
+void touchBeep(bool enable);
+void digitalClockDisplay(void); 
+unsigned long processSyncMessage();
+time_t getTeensy3Time();
+void printDigits(int digits);
+
 
 //
 // --------------------------------------------User Profile Selection --------------------------------------------------------
 //
 //#define USE_ENET_PROFILE    // <<--- Uncomment this line if you want to use ethernet without editing any variables. 
 //
+
+#ifndef PANADAPTER
 #ifdef USE_ENET_PROFILE
     uint8_t     user_Profile = 0;   // Profile 0 has enet enabled, 1 and 2 do not.
-#else
+#else  // USE_ENET_PROFILE
     uint8_t     user_Profile = 1;   // Profile 0 has enet enabled, 1 and 2 do not.
-#endif
+#endif  // USE_ENET_PROFILE
+#else  // PANADAPTER
+    uint8_t     user_Profile = 2;   // Profile 2 is optimized for Panadapter usage
+#endif  // PANADAPTER
+
 //
 //----------------------------------------------------------------------------------------------------------------------------
 //
@@ -104,13 +115,15 @@ uint8_t             popup = 0;                          // experimental flag for
 int32_t             multiKnob(uint8_t clear);           // consumer features use this for control input
 volatile int32_t    Freq_Peak = 0;
 uint8_t             display_state;   // something to hold the button state for the display pop-up window later.
-bool                rogerBeep_flag = false;
+bool                touchBeep_flag = false;
+bool                MeterInUse;  // S-meter flag to block updates while the MF knob has control
 
 #ifdef USE_RA8875
   RA8875 tft = RA8875(RA8875_CS,RA8875_RESET); //initiate the display object
 #else
   RA8876_t3 tft = RA8876_t3(RA8876_CS,RA8876_RESET); //initiate the display object
   FT5206 cts = FT5206(CTP_INT); 
+  extern void setActiveWindow();
 #endif
 
 #ifdef ENET
@@ -176,14 +189,14 @@ AudioConnection_F32     patchCord4z(sinewave3,0,  FFT_Switch2,3);
 // Copnnections for FFT Only - chooses either the input or the output to display in the spectrum plot
 AudioConnection_F32     patchCord7a(Input,0,         FFT_Switch1,0);
 AudioConnection_F32     patchCord7b(Input,1,         FFT_Switch2,0);
-AudioConnection_F32     patchCord6a(Output,0,        FFT_Switch1,1);
-AudioConnection_F32     patchCord6b(Output,1,        FFT_Switch2,1);
+AudioConnection_F32     patchCord6a(Input,0,        FFT_Switch1,1);
+AudioConnection_F32     patchCord6b(Input,1,        FFT_Switch2,1);
 AudioConnection_F32     patchCord5a(FFT_Switch1,0,   myFFT,0);
 AudioConnection_F32     patchCord5b(FFT_Switch2,0,   myFFT,1);
 
 // TEST trying out new NB and AGC features  - use selected lines below as make sense
 AudioConnection_F32     patchCord10a(Input,0,         NoiseBlanker,0);
-AudioConnection_F32     patchCord10b(Input,0,         NoiseBlanker,1);
+AudioConnection_F32     patchCord10b(Input,1,         NoiseBlanker,1);
 //AudioConnection_F32     patchCord8a(NoiseBlanker1,0, compressor1, 0);
 //AudioConnection_F32     patchCord8b(NoiseBlanker2,0, compressor2, 0);
 //AudioConnection_F32     patchCord9a(compressor1,0,   Hilbert1,0);
@@ -217,7 +230,7 @@ Metro popup_timer   = Metro(500);   // used to check for popup screen request
 Metro NTP_updateTx  = Metro(10000); // NTP Request Time interval
 Metro NTP_updateRx  = Metro(65000); // Initial NTP timer reply timeout. Program will shorten this after each request.
 Metro MF_Timeout    = Metro(4000);  // MultiFunction Knob and Switch 
-Metro rogerBeep_timer = Metro(80); // Feedback beep for button touches
+Metro touchBeep_timer = Metro(80); // Feedback beep for button touches
 
 uint8_t enc_ppr_response = VFO_PPR;   // for VFO A/B Tuning encoder. This scales the PPR to account for high vs low PPR encoders.  
                             // 600ppr is very fast at 1Hz steps, worse at 10Khz!
@@ -225,6 +238,7 @@ uint8_t enc_ppr_response = VFO_PPR;   // for VFO A/B Tuning encoder. This scales
 // Set this to be the default MF knob function when it does not have settings focus from a button touch.
 // Choose any from the MF Knob aware list below.
 uint8_t MF_client;  // Flag for current owner of MF knob services
+bool MF_default_is_active = true;
 //
 //============================================  Start of Spectrum Setup Section =====================================================
 //
@@ -235,23 +249,28 @@ int16_t         fft_bins            = FFT_SIZE;     // Number of FFT bins which 
 float           fft_bin_size        = sample_rate_Hz/(FFT_SIZE*2);   // Size of FFT bin in HZ.  From sample_rate_Hz/FFT_SIZE for iq
 extern int16_t  spectrum_preset;                    // Specify the default layout option for spectrum window placement and size.
 int16_t         FFT_Source          = 0;            // Used to switch the FFT input source around
-extern Metro spectrum_waterfall_update;             // Timer used for controlling the Spectrum module update rate.
+extern Metro    spectrum_waterfall_update;          // Timer used for controlling the Spectrum module update rate.
+extern struct Spectrum_Parms Sp_Parms_Def[];
 
-//
 // -------------------------------------Setup() -------------------------------------------------------------------
 //
-FLASHMEM 
-void setup()
+
+tmElements_t tm;
+time_t prevDisplay = 0; // When the digital clock was displayed
+
+COLD void setup()
 {
     Serial.begin(115200);
     delay(500);
-    Serial.println("**** Running I2C Scanner ****");
+    Serial.println(F("**** Running I2C Scanner ****"));
 
     // ---------------- Setup our basic display and comms ---------------------------
     Wire.begin();
     Wire.setClock(100000UL); // Keep at 100K I2C bus transfer data rate for I2C Encoders to work right
     I2C_Scanner();
     MF_client = user_settings[user_Profile].default_MF_client;
+    MF_default_is_active = true;
+    MeterInUse = false;
     
     #ifdef  I2C_ENCODERS  
         set_I2CEncoders();
@@ -266,23 +285,35 @@ void setup()
 
     #ifdef USE_RA8875
         tft.begin(RA8875_800x480);
+        tft.setRotation(SCREEN_ROTATION); // 0 is normal, 1 is 90, 2 is 180, 3 is 270 degrees
     #else    
         tft.begin(30000000UL);
         cts.begin();
         cts.setTouchLimit(MAXTOUCHLIMIT);
         tft.touchEnable(false);   // Ensure the resitive ocntroller, if any is off
-        tft.backlight(true);
-        tft.displayOn(true);
+        tft.displayImageStartAddress(PAGE1_START_ADDR); 
+        tft.displayImageWidth(SCREEN_WIDTH);
+        tft.displayWindowStartXY(0,0);
+        // specify the page 2 for the current canvas
+        tft.canvasImageStartAddress(PAGE2_START_ADDR);
+        // specify the page 1 for the current canvas
+        tft.canvasImageStartAddress(PAGE1_START_ADDR);
+        tft.canvasImageWidth(SCREEN_WIDTH);
+        //tft.activeWindowXY(0,0);
+        //tft.activeWindowWH(SCREEN_WIDTH,SCREEN_HEIGHT);
+        setActiveWindow();
         tft.graphicMode(true);
         tft.clearActiveScreen();
         tft.selectScreen(0);  // Select screen page 0
         tft.fillScreen(BLACK);
         tft.setBackGroundColor(BLACK);
         tft.setTextColor(RA8875_WHITE, RA8875_BLACK);
-    #endif
-    tft.setRotation(0); // 0 is normal, 1 is 90, 2 is 180, 3 is 270 degrees.  
+        tft.backlight(true);
+        tft.displayOn(true);
+        tft.setRotation(SCREEN_ROTATION); // 0 is normal, 1 is 90, 2 is 180, 3 is 270 degrees.  
                         // RA8876 touch controller is upside down compared to the RA8875 so correcting for it there.
-
+    #endif
+      
     #if defined(USE_FT5206_TOUCH)
         tft.useCapINT(RA8875_INT);
         tft.setTouchLimit(MAXTOUCHLIMIT);
@@ -293,6 +324,26 @@ void setup()
             //tft.print("you should open RA8875UserSettings.h file and uncomment USE_FT5206_TOUCH!");
         #endif  // USE_RA8875
     #endif // USE_FT5206_TOUCH
+    
+    // Update time on startup from RTC. If a USB connection is up, get the time from a PC.  
+    // Later if enet is up, get time from NTP periodically.
+    setSyncProvider(getTeensy3Time);   // the function to get the time from the RTC
+    if(timeStatus()!= timeSet) // try this other way
+        Serial.println("Unable to sync with the RTC");
+    else
+        Serial.println("RTC has set the system time"); 
+    if (Serial.available()) 
+    {
+        time_t t = processSyncMessage();
+        if (t != 0) 
+        {
+            Teensy3Clock.set(t); // set the RTC
+            setTime(t);
+        }
+    }
+    digitalClockDisplay(); // print time to terminal
+  
+    initSpectrum();                                   // Call before initDisplay() to put screen into Layer 1 mode before any other text is drawn!
 
     #ifdef DIG_STEP_ATT
         // Initialize the I/O for digital step attenuator if used.
@@ -307,8 +358,22 @@ void setup()
     #ifdef I2C_LCD    // initialize the I2C LCD
         lcd.init(); 
         lcd.backlight();
-        lcd.print("Keith's SDR");
+        lcd.print(F("Keith's SDR"));
     #endif
+
+    //UNCOMMENT THESE TWO LINES FOR TEENSY AUDIO BOARD:
+    //SPI.setMOSI(7);  // Audio shield has MOSI on pin 7
+    //SPI.setSCK(14);  // Audio shield has SCK on pin 14
+    // see if the card is present and can be initialized:
+    SD_CardInfo();
+    // open or create our config file.  Filenames follow DOS 8.3 format rules
+    Open_SD_cfgfile();
+    // test our file
+    // make a string for assembling the data to log:
+    write_db_tables();
+    read_db_tables();
+    write_radiocfg_h();        // write out the #define to a file on the SD card.  
+                        // This can be used o te PC during complie to override the RadioCFg.h
 
     //--------------------------   Setup our Audio System -------------------------------------
 
@@ -346,7 +411,7 @@ void setup()
     FFT_Switch2.gain(3, 0.0f); //  1  Sinewave3 to FFT for test cal, 0 is off
     #endif
     AudioInterrupts();
-   
+
     /*
     //Shows how to use the switch object.  Not using right now but have several ideas for later so saving it here.
     // The switch is single pole 4 position, numbered (0, 3)  0=FFT before filters, 1 = FFT after filters
@@ -375,8 +440,8 @@ void setup()
 #endif
 
     // TODO: Move this to set mode and/or bandwidth section when ready.  messes up initial USB/or LSB/CW alignments until one hits the mode button.
-    //RX_Summer.gain(0, -3.0); // Leave at 1.0
-    //RX_Summer.gain(1, 3.0);  // -1 for LSB out
+    RX_Summer.gain(0, -3.0); // Leave at 1.0
+    RX_Summer.gain(1, 3.0);  // -1 for LSB out
     // Choose our output type.  Can do dB, RMS or power
     myFFT.setOutputType(FFT_DBFS); // FFT_RMS or FFT_POWER or FFT_DBFS
     // Uncomment one these to try other window functions
@@ -387,13 +452,17 @@ void setup()
     myFFT.setNAverage(3); // experiment with this value.  Too much causes a large time penalty
     // -------------------- Setup our radio settings and UI layout --------------------------------
 
-    initSpectrum();                                   // Call before initDisplay() to put screen into Layer 1 mode before any other text is drawn!
     curr_band = user_settings[user_Profile].last_band;       // get last band used from user profile.
     user_settings[user_Profile].sp_preset = spectrum_preset; // uncomment this line to update user profile layout choice
     spectrum_preset = user_settings[user_Profile].sp_preset;
     //==================================== Frequency Set ==========================================
+    #ifdef PANADAPTER
+    VFOA = PANADAPTER_LO;
+    VFOB = PANADAPTER_LO;
+    #else
     VFOA = bandmem[curr_band].vfo_A_last; //I used 7850000  frequency CHU  Time Signal Canada
     VFOB = bandmem[curr_band].vfo_B_last;
+    #endif
     // Assignments for our encoder knobs, if any
     initVfo(); // initialize the si5351 vfo
     //changeBands(0);   // Sets the VFOs to last used frequencies, sets preselector, active VFO, other last-used settings per band.
@@ -406,9 +475,10 @@ void setup()
                                                               // Therefore always call the generator before drawSpectrum() to create a new set of params you can cut anmd paste.
                                                               // Generator never modifies the globals so never affects the layout itself.
                                                               // Print out our starting frequency for testing
-    Serial.print("\nInitial Dial Frequency is ");
+    //drawSpectrumFrame(6);   // for 2nd window
+    Serial.print(F("\nInitial Dial Frequency is "));
     Serial.print(formatVFO(VFOA));
-    Serial.println("MHz");
+    Serial.println(F("MHz"));
 
     // -------------------- Setup Ethernet and NTP Time and Clock button  --------------------------------
 
@@ -421,14 +491,14 @@ void setup()
         tft.setFont(Arial_14);
         tft.setTextColor(RA8875_BLUE);
         tft.setCursor(t_ptr->bx+10, t_ptr->by+10);
-        tft.print("Starting Network");
+        tft.print(F("Starting Network"));
         enet_start();
         if (!enet_ready)
         {
             enet_start_fail_time = millis(); // set timer for 10 minute self recovery in main loop
-            Serial.println(">Ethernet System Startup Failed, setting retry timer (10 minutes)");
+            Serial.println(F(">Ethernet System Startup Failed, setting retry timer (10 minutes)"));
         }
-        Serial.println(">Ethernet System Startup");
+        Serial.println(F(">Ethernet System Startup"));
         //setSyncProvider(getNtpTime);
     }
     #endif
@@ -451,13 +521,22 @@ void setup()
         user_settings[user_Profile].mute = ON;
         displayMute();
     }
-    
+
     changeBands(0);     // Sets the VFOs to last used frequencies, sets preselector, active VFO, other last-used settings per band.
                         // Call changeBands() here after volume to get proper startup volume
 
     //------------------Finish the setup by printing the help menu to the serial connections--------------------
     printHelp();
     InternalTemperature.begin(TEMPERATURE_NO_ADC_SETTING_CHANGES);
+    
+    #ifdef FT817_CAT
+        Serial.println("Starting the CAT port and reading some radio information if available");
+        init_CAT_comms();  // initialize the CAT port
+        print_CAT_status();  // Test Line to read daa forfm FT817 if attached.
+    #endif
+    #ifdef ALL_CAT
+        CAT_setup();   // Setup teh Serial port for cnfigured Radio comm port
+    #endif
 }
 
 static uint32_t delta = 0;
@@ -477,6 +556,7 @@ void loop()
                                               // a popup must call drawSpectrumFrame when it is done and clear this flag.
             if (!user_settings[user_Profile].notch)  // TEST:  added to test CPU impact
                 spectrum_update(spectrum_preset); // valid numbers are 0 through PRESETS to index the record of predefined window layouts
+                // spectrum_update(6);  // for 2nd window
     }
     
     uint32_t time_n = millis() - time_old;
@@ -484,7 +564,7 @@ void loop()
     if (time_n > delta)
     {
         delta = time_n;
-        Serial.print("Tms=");
+        Serial.print(F("Tms="));
         Serial.println(delta);
     }
     time_old = millis();
@@ -497,6 +577,7 @@ void loop()
     if (tuner.check() == 1 && newFreq < enc_ppr_response) // dump counts accumulated over time but < minimum for a step to count.
     {
         VFO.readAndReset();
+        //VFO.read();
         newFreq = 0;
     }
 
@@ -506,15 +587,22 @@ void loop()
     {
         newFreq /= enc_ppr_response;    // adjust for high vs low PPR encoders.  600ppr is too fast!
         selectFrequency(newFreq);
-        VFO.readAndReset();             // zero out counter fo rnext read.
+        VFO.readAndReset();
+        //VFO.read();             // zero out counter for next read.
         newFreq = 0;
     }
 
-    if (MF_Timeout.check() == 1 && MF_client != user_settings[user_Profile].default_MF_client)
+    if (MF_Timeout.check() == 1)
     {
-        Serial.print("Switching to Default MF knob assignment, current owner is = ");
-        Serial.println(MF_client);
-        unset_MF_Service(user_settings[user_Profile].default_MF_client);  // will turn off the button, if any, and set the default as new owner.
+        MeterInUse = false;  
+        //if (MF_client != user_settings[user_Profile].default_MF_client)
+        if (!MF_default_is_active)
+        {
+            Serial.print(F("Switching to Default MF knob assignment, current owner is = "));
+            Serial.println(MF_client);
+            set_MF_Service(user_settings[user_Profile].default_MF_client);  // will turn off the button, if any, and set the default as new owner.
+            MF_default_is_active = true;
+        }
     }
 
     #ifdef I2C_ENCODERS
@@ -528,14 +616,14 @@ void loop()
         if(MF_ENC.updateStatus() && user_settings[user_Profile].encoder1_client)
         {            
             mfg = MF_ENC.readStatus();
-            if (mfg) { Serial.print("****Checked MF_Enc status = "); Serial.println(mfg); }
+            if (mfg) { Serial.print(F("****Checked MF_Enc status = ")); Serial.println(mfg); }
         }
         #endif
         #ifdef ENC2_ADDR
         if(ENC2.updateStatus() && user_settings[user_Profile].encoder2_client)
         {
             mfg = ENC2.readStatus();
-            if (mfg) {Serial.print("****Checked Encoder #2 status = "); Serial.println(mfg); }
+            if (mfg) {Serial.print(F("****Checked Encoder #2 status = ")); Serial.println(mfg); }
         }
         #endif
         #ifdef ENC3_ADDR
@@ -546,7 +634,6 @@ void loop()
         }
         #endif
     }
-    
     #else
     // Use a mechanical encoder on the GPIO pisn, if any.
     if (MF_client)  // skip if no one is listening.MF_Service();  // check the Multi-Function encoder and pass results to the current owner, of any.
@@ -564,21 +651,43 @@ void loop()
         // Quad_Check();
     }
 
+    #ifdef PANADAPTER
+        #ifdef ALL_CAT
+            //if (CAT_update.check() == 1) // update our meters
+            //{
+                // update Panadapter CAT port data using same time  
+                CAT_handler();
+            //}
+        #endif  // ALL_CAT
+    #endif // PANADAPTER
+
     if (popup_timer.check() == 1 && popup) // stop spectrum updates, clear the screen and post up a keyboard or something
     {
         // Service popup window
     }
     
     // The timer and flag are set by the rogerBeep() function
-    if (rogerBeep_flag && rogerBeep_timer.check() == 1)   
+    if (touchBeep_flag && touchBeep_timer.check() == 1)   
     {
-        rogerBeep(false);    
+        touchBeep(false);    
     }
 
     //respond to Serial commands
     while (Serial.available())
     {
-        respondToByte((char)Serial.read());
+        if (Serial.peek() == 'T')
+        {
+            time_t t = processSyncMessage();
+            if (t != 0) 
+            {
+                Serial.println(F("Time Update"));
+                Teensy3Clock.set(t); // set the RTC
+                setTime(t);
+                digitalClockDisplay();
+            }
+        }
+        else
+            respondToByte((char)Serial.read());
     }
 
     //check to see whether to print the CPU and Memory Usage
@@ -611,9 +720,10 @@ void loop()
             Ethernet.maintain();          // keep our connection fresh
         }
     }
+#endif // End of Ethenet related functions here
 
     // Check if the time has updated (1 second) and update the clock display
-    if (timeStatus() != timeNotSet && enet_ready) // Only display if ethernet is active and have a valid time source
+    if (timeStatus() != timeNotSet) // && enet_ready) // Only display if ethernet is active and have a valid time source
     {
         if (now() != prevDisplay)
         {
@@ -622,7 +732,6 @@ void loop()
             displayTime();
         }
     }
-#endif // End of Ethenet related functions here
 }
 
 //
@@ -631,9 +740,14 @@ void loop()
 // Ramps the volume down to specified level 0 to 1.0 range using 1 of 3 types.  It remembers the original volume level so
 // you are reducing it by a factor then raisinmg back up a factor toward the orignal volume setting.
 // Range is 1.0 for full original and 0 for off.
-FLASHMEM 
-void RampVolume(float vol, int16_t rampType)
+COLD void RampVolume(float vol, int16_t rampType)
 {
+    #ifdef PANADAPTER
+        vol = 1.0; // No relays changes so not needed in this mode.
+        codec1.dacVolume(vol);
+        return;
+    #endif
+
     const char *rampName[] = {
         "No Ramp (instant)", // loud pop due to instant change
         "Normal Ramp",       // graceful transition between volume levels
@@ -665,8 +779,7 @@ void RampVolume(float vol, int16_t rampType)
 // _______________________________________ Print CPU Stats, Adjsut Dial Freq ____________________________
 //
 //This routine prints the current and maximum CPU usage and the current usage of the AudioMemory that has been allocated
-
-void printCPUandMemory(unsigned long curTime_millis, unsigned long updatePeriod_millis)
+COLD void printCPUandMemory(unsigned long curTime_millis, unsigned long updatePeriod_millis)
 {
     //static unsigned long updatePeriod_millis = 3000; //how many milliseconds between updating gain reading?
     static unsigned long lastUpdate_millis = 0;
@@ -676,21 +789,21 @@ void printCPUandMemory(unsigned long curTime_millis, unsigned long updatePeriod_
         lastUpdate_millis = 0; //handle wrap-around of the clock
     if ((curTime_millis - lastUpdate_millis) > updatePeriod_millis)
     { //is it time to update the user interface?
-        Serial.print("\nCPU Cur/Peak: ");
+        Serial.print(F("\nCPU Cur/Peak: "));
         Serial.print(audio_settings.processorUsage());
-        Serial.print("%/");
+        Serial.print(F("%/"));
         Serial.print(audio_settings.processorUsageMax());
-        Serial.println("%");
-        Serial.print("CPU Temperature:");
+        Serial.println(F("%"));
+        Serial.print(F("CPU Temperature:"));
         Serial.print(InternalTemperature.readTemperatureF(), 1);
-        Serial.print("F ");
+        Serial.print(F("F "));
         Serial.print(InternalTemperature.readTemperatureC(), 1);
-        Serial.println("C");
-        Serial.print(" Audio MEM Float32 Cur/Peak: ");
+        Serial.println(F("C"));
+        Serial.print(F(" Audio MEM Float32 Cur/Peak: "));
         Serial.print(AudioMemoryUsage_F32());
-        Serial.print("/");
+        Serial.print(F("/"));
         Serial.println(AudioMemoryUsageMax_F32());
-        Serial.println("*** End of Report ***");
+        Serial.println(F("*** End of Report ***"));
 
         lastUpdate_millis = curTime_millis; //we will use this value the next time around.
         delta = 0;
@@ -704,8 +817,7 @@ void printCPUandMemory(unsigned long curTime_millis, unsigned long updatePeriod_
 // _______________________________________ Console Parser ____________________________________
 //
 //switch yard to determine the desired action
-FLASHMEM
-void respondToByte(char c)
+COLD void respondToByte(char c)
 {
     char s[2];
     s[0] = c;
@@ -720,32 +832,32 @@ void respondToByte(char c)
         break;
     case 'C':
     case 'c':
-        Serial.println("Toggle printing of memory and CPU usage.");
+        Serial.println(F("Toggle printing of memory and CPU usage."));
         togglePrintMemoryAndCPU();
         break;
     case 'M':
     case 'm':
-        Serial.println("\nMemory Usage (FlexInfo)");
+        Serial.println(F("\nMemory Usage (FlexInfo)"));
         flexRamInfo();
-        Serial.println("*** End of Report ***");
+        Serial.println(F("*** End of Report ***"));
         break;
     default:
-        Serial.print("You typed ");
+        Serial.print(F("You typed "));
         Serial.print(s);
-        Serial.println(".  What command?");
+        Serial.println(F(".  What command?"));
     }
 }
 //
 // _______________________________________ Print Help Menu ____________________________________
 //
-FLASHMEM 
-void printHelp(void)
+COLD void printHelp(void)
 {
     Serial.println();
-    Serial.println("Help: Available Commands:");
-    Serial.println("   h: Print this help");
-    Serial.println("   C: Toggle printing of CPU and Memory usage");
-    Serial.println("   M: Print Detailed Memory Region Usage Report");
+    Serial.println(F("Help: Available Commands:"));
+    Serial.println(F("   h: Print this help"));
+    Serial.println(F("   C: Toggle printing of CPU and Memory usage"));
+    Serial.println(F("   M: Print Detailed Memory Region Usage Report"));
+    Serial.println(F("   T+10 digits: Time Update. Enter T and 10 digits for seconds since 1/1/1970"));
 }
 #ifndef I2C_ENCODERS
 //
@@ -779,40 +891,38 @@ int32_t multiKnob(uint8_t clear)
 #endif  // I2C_ENCODERS
 
 // Deregister the MF_client
-FLASHMEM
-void unset_MF_Service(uint8_t client_name)
-{
-    if (client_name == MF_client)  // nothing needed if this is called from the button itself to deregister
+COLD void unset_MF_Service(uint8_t old_client_name)  // clear the old owner button status
+{ 
+    if (old_client_name == MF_client)  // nothing needed if this is called from the button itself to deregister
     {
-        MF_client = user_settings[user_Profile].default_MF_client;    // assign new owner to default for now.
-        return;   
+        //MF_client = user_settings[user_Profile].default_MF_client;    // assign new owner to default for now.
+        //return;   
     }
+    
     // This must be from a timeout or a new button before timeout
     // Turn off button of the previous owner, if any, using the MF knob at change of owner or timeout
-    // Some button can be left on such as Atten or other non-button MF users.  Just leave them off this list.
-    switch (MF_client)
+    // Some buttons can be left on such as Atten or other non-button MF users.  Just leave them off this list.
+    switch (old_client_name)
     {
         case MFNONE: {
             // no current owner, return
         } break;
-        case RFGAIN_BTN: {           
-            setRFgain();   //since it was active toggle the output off
+        case RFGAIN_BTN: {         
+            setRFgain(-1);   //since it was active toggle the output off
         } break;
         case AFGAIN_BTN: {         
-            setAFgain();
+            setAFgain(-1);
         } break;
         case  REFLVL_BTN: {
-            setRefLevel();
-            Serial.println("unsetREF");
+            setRefLevel(-1);
         } break;
+        case ATTEN_BTN:
         case NB_BTN:
         case MFTUNE:
-        case ATTEN_BTN:
         default     : {          
         // No button for VFO tune, atten button stays on
-            MF_client = user_settings[user_Profile].default_MF_client;
-        } break;
-    
+            //MF_client = user_settings[user_Profile].default_MF_client;
+        } break;         
     } 
 }
 // ---------------------------------- set_MF_Service -----------------------------------
@@ -822,15 +932,18 @@ void unset_MF_Service(uint8_t client_name)
 
 // Potential owners can query the MF_client variable to see who owns the MF knob.  
 // Can take ownership by calling this fucntion and passing the enum ID for it's service function
-FLASHMEM 
-void set_MF_Service(uint8_t client_name)
+COLD void set_MF_Service(uint8_t new_client_name)  // this will be the new owner after we clear the old one
 {
     
     #ifndef I2C_ENCODERS   // The I2c encoders are using interrupt driven callback functions so no need to call them, they will call us.
-    multiKnob(1);       // for non-I2C encoder, clear the counts.
+        multiKnob(1);       // for non-I2C encoder, clear the counts.
     #endif //  I2C_ENCODERS
-    unset_MF_Service(user_settings[user_Profile].default_MF_client);
-    MF_client = client_name;    
+    unset_MF_Service(MF_client);    //  turn off current button if on
+    MF_client = new_client_name;        // Now assign new owner
+    //if (MF_client == user_settings[user_Profile].default_MF_client)
+    //    MF_default_is_active = true;
+    //else 
+    //    MF_default_is_active = false;
     MF_Timeout.reset();  // reset (extend) timeout timer as long as there is activity.  
                          // When it expires it will be switched to default
     //Serial.print("New MF Knob Client ID is ");
@@ -841,16 +954,15 @@ void set_MF_Service(uint8_t client_name)
 //
 //  Called in the main loop to look for an encoder event and if found, call the registered function
 //
-static uint16_t old_ts;
-FLASHMEM 
-void MF_Service(int8_t counts, uint8_t knob)
+//static uint16_t old_ts;
+COLD void MF_Service(int8_t counts, uint8_t knob)
 {  
     if (counts == 0)  // no knob movement, nothing to do.
         return;
     
     if (knob == MF_client)
-        MF_Timeout.reset();  // if it isthe MF_Client then reset (extend) timeout timer as long as there is activity.  
-                            // When it experies it will be switched to default
+        MF_Timeout.reset();  // if it is the MF_Client then reset (extend) timeout timer as long as there is activity.  
+                            // When it expires it will be switched to default
 
     //Serial.print("MF Knob Client ID is ");
     //Serial.println(MF_client);
@@ -868,7 +980,6 @@ void MF_Service(int8_t counts, uint8_t knob)
         } break;
         case  REFLVL_BTN: {
             RefLevel(counts*-1);
-            Serial.println("setREF");
         } break;
         case  ATTEN_BTN: {
             if (counts> 31)
@@ -878,32 +989,34 @@ void MF_Service(int8_t counts, uint8_t knob)
             int8_t att_tmp = bandmem[curr_band].attenuator_dB + counts;
             if (att_tmp <=0)
                 att_tmp = 0;
-            #ifdef DIG_STEP_ATT
-              setAtten_dB(att_tmp);  // set attenuator level to value in database for this band           
-            #endif
+              setAtten_dB(att_tmp);  // set attenuator level to value in database for this band
         } break;
         case  NB_BTN: {
             setNBLevel(counts);
         } break;
         case MFTUNE :
         default     : {   
-            old_ts = bandmem[curr_band].tune_step;
-            bandmem[curr_band].tune_step =3;
+            //old_ts = bandmem[curr_band].tune_step;
+            //bandmem[curr_band].tune_step =0;
             selectFrequency(counts);
-            bandmem[curr_band].tune_step = old_ts;
+            //bandmem[curr_band].tune_step = old_ts;
         } break;        
     };
 }
 //
 //  Scans for any I2C connected devices and reports them to the serial terminal.  Usually done early in startup.
 //
-FLASHMEM 
-void I2C_Scanner(void)
+COLD void I2C_Scanner(void)
 {
   byte error, address; //variable for error and I2C address
   int nDevices;
 
-  Serial.println("Scanning...");
+  // uncomment these to use alternate pins
+  //WIRE.setSCL(37);
+  //WIRE.setSDA(36);
+  //WIRE.begin();
+  
+  Serial.println(F("Scanning..."));
 
   nDevices = 0;
   for (address = 1; address < 127; address++ )
@@ -916,38 +1029,130 @@ void I2C_Scanner(void)
 
     if (error == 0)
     {
-      Serial.print("I2C device found at address 0x");
+      Serial.print(F("I2C device found at address 0x"));
       if (address < 16)
         Serial.print("0");
       Serial.print(address, HEX);
-      Serial.println("  !");
+      Serial.print("  (");
+      printKnownChips(address);
+      Serial.println(")");
+      //Serial.println("  !");
       nDevices++;
     }
     else if (error == 4)
     {
-      Serial.print("Unknown error at address 0x");
+      Serial.print(F("Unknown error at address 0x"));
       if (address < 16)
         Serial.print("0");
       Serial.println(address, HEX);
     }
   }
   if (nDevices == 0)
-    Serial.println("No I2C devices found\n");
+    Serial.println(F("No I2C devices found\n"));
   else
-    Serial.println("done\n");
+    Serial.println(F("done\n"));
 
   //delay(500); // wait 5 seconds for the next I2C scan
+}
+
+// prints a list of known i2C devices that match a discovered address
+void printKnownChips(byte address)
+{
+  // Is this list missing part numbers for chips you use?
+  // Please suggest additions here:
+  // https://github.com/PaulStoffregen/Wire/issues/new
+  switch (address) {
+    case 0x00: Serial.print(F("AS3935")); break;
+    case 0x01: Serial.print(F("AS3935")); break;
+    case 0x02: Serial.print(F("AS3935")); break;
+    case 0x03: Serial.print(F("AS3935")); break;
+    case 0x0A: Serial.print(F("SGTL5000")); break; // MCLK required
+    case 0x0B: Serial.print(F("SMBusBattery?")); break;
+    case 0x0C: Serial.print(F("AK8963")); break;
+    case 0x10: Serial.print(F("CS4272")); break;
+    case 0x11: Serial.print(F("Si4713")); break;
+    case 0x13: Serial.print(F("VCNL4000,AK4558")); break;
+    case 0x18: Serial.print(F("LIS331DLH")); break;
+    case 0x19: Serial.print(F("LSM303,LIS331DLH")); break;
+    case 0x1A: Serial.print(F("WM8731")); break;
+    case 0x1C: Serial.print(F("LIS3MDL")); break;
+    case 0x1D: Serial.print(F("LSM303D,LSM9DS0,ADXL345,MMA7455L,LSM9DS1,LIS3DSH")); break;
+    case 0x1E: Serial.print(F("LSM303D,HMC5883L,FXOS8700,LIS3DSH")); break;
+    case 0x20: Serial.print(F("MCP23017,MCP23008,PCF8574,FXAS21002,SoilMoisture")); break;
+    case 0x21: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x22: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x23: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x24: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x25: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x26: Serial.print(F("MCP23017,MCP23008,PCF8574")); break;
+    case 0x27: Serial.print(F("MCP23017,MCP23008,PCF8574,LCD16x2,DigoleDisplay")); break;
+    case 0x28: Serial.print(F("BNO055,EM7180,CAP1188")); break;
+    case 0x29: Serial.print(F("TSL2561,VL6180,TSL2561,TSL2591,BNO055,CAP1188")); break;
+    case 0x2A: Serial.print(F("SGTL5000,CAP1188")); break;
+    case 0x2B: Serial.print(F("CAP1188")); break;
+    case 0x2C: Serial.print(F("MCP44XX ePot")); break;
+    case 0x2D: Serial.print(F("MCP44XX ePot")); break;
+    case 0x2E: Serial.print(F("MCP44XX ePot")); break;
+    case 0x2F: Serial.print(F("MCP44XX ePot")); break;
+    case 0x33: Serial.print(F("MAX11614,MAX11615")); break;
+    case 0x34: Serial.print(F("MAX11612,MAX11613")); break;
+    case 0x35: Serial.print(F("MAX11616,MAX11617")); break;
+    case 0x38: Serial.print(F("RA8875,FT6206")); break;
+    case 0x39: Serial.print(F("TSL2561, APDS9960")); break;
+    case 0x3C: Serial.print(F("SSD1306,DigisparkOLED")); break;
+    case 0x3D: Serial.print(F("SSD1306")); break;
+    case 0x40: Serial.print(F("PCA9685,Si7021")); break;
+    case 0x41: Serial.print(F("STMPE610,PCA9685")); break;
+    case 0x42: Serial.print(F("PCA9685")); break;
+    case 0x43: Serial.print(F("PCA9685")); break;
+    case 0x44: Serial.print(F("PCA9685, SHT3X")); break;
+    case 0x45: Serial.print(F("PCA9685, SHT3X")); break;
+    case 0x46: Serial.print(F("PCA9685")); break;
+    case 0x47: Serial.print(F("PCA9685")); break;
+    case 0x48: Serial.print(F("ADS1115,PN532,TMP102,PCF8591")); break;
+    case 0x49: Serial.print(F("ADS1115,TSL2561,PCF8591")); break;
+    case 0x4A: Serial.print(F("ADS1115")); break;
+    case 0x4B: Serial.print(F("ADS1115,TMP102")); break;
+    case 0x50: Serial.print(F("EEPROM")); break;
+    case 0x51: Serial.print(F("EEPROM")); break;
+    case 0x52: Serial.print(F("Nunchuk,EEPROM")); break;
+    case 0x53: Serial.print(F("ADXL345,EEPROM")); break;
+    case 0x54: Serial.print(F("EEPROM")); break;
+    case 0x55: Serial.print(F("EEPROM")); break;
+    case 0x56: Serial.print(F("EEPROM")); break;
+    case 0x57: Serial.print(F("EEPROM")); break;
+    case 0x58: Serial.print(F("TPA2016,MAX21100")); break;
+    case 0x5A: Serial.print(F("MPR121")); break;
+    case 0x60: Serial.print(F("MPL3115,MCP4725,MCP4728,TEA5767,Si5351")); break;
+    case 0x61: Serial.print(F("MCP4725,AtlasEzoDO,DuPPaEncoder")); break;
+    case 0x62: Serial.print(F("LidarLite,MCP4725,AtlasEzoORP,DuPPaEncoder")); break;
+    case 0x63: Serial.print(F("MCP4725,AtlasEzoPH,DuPPaEncoder")); break;
+    case 0x64: Serial.print(F("AtlasEzoEC,DuPPaEncoder")); break;
+    case 0x66: Serial.print(F("AtlasEzoRTD,DuPPaEncoder")); break;
+    case 0x67: Serial.print(F("DuPPaEncoder")); break;
+    case 0x68: Serial.print(F("DS1307,DS3231,MPU6050,MPU9050,MPU9250,ITG3200,ITG3701,LSM9DS0,L3G4200D,DuPPaEncoder")); break;
+    case 0x69: Serial.print(F("MPU6050,MPU9050,MPU9250,ITG3701,L3G4200D")); break;
+    case 0x6A: Serial.print(F("LSM9DS1")); break;
+    case 0x6B: Serial.print(F("LSM9DS0")); break;
+    case 0x70: Serial.print(F("HT16K33")); break;
+    case 0x71: Serial.print(F("SFE7SEG,HT16K33")); break;
+    case 0x72: Serial.print(F("HT16K33")); break;
+    case 0x73: Serial.print(F("HT16K33")); break;
+    case 0x76: Serial.print(F("MS5607,MS5611,MS5637,BMP280")); break;
+    case 0x77: Serial.print(F("BMP085,BMA180,BMP280,MS5611")); break;
+    default: Serial.print(F("unknown chip"));
+  }
 }
 
 // Turns on or off a tone injected in the RX_summer block.  
 // Function that calls for a rogerBeep sets a global flag.
 // The main loop starts a timer for a short beep an calls this to turn the tone on or off.
-void rogerBeep(bool enable)
+COLD void touchBeep(bool enable)
 {
     if (enable)
     {
-        rogerBeep_flag = true;
-        rogerBeep_timer.reset();
+        touchBeep_flag = true;
+        touchBeep_timer.reset();
         sinewave1.amplitude(user_settings[user_Profile].rogerBeep_Vol);
         sinewave1.frequency((float) user_settings[user_Profile].pitch); //    Alert tones
     }
@@ -955,11 +1160,58 @@ void rogerBeep(bool enable)
     {
         //if (rogerBeep_timer.check() == 1)   // make sure another event does not cut it off early
         //{ 
-            rogerBeep_flag = false;
+            touchBeep_flag = false;
             sinewave1.amplitude(0.0);
         //}
     }
 }
 
+COLD void printDigits(int digits)
+{
+  // utility function for digital clock display: prints preceding colon and leading 0
+  Serial.print(":");
+  if(digits < 10)
+    Serial.print('0');
+  Serial.print(digits);
+}
+
+COLD time_t getTeensy3Time()
+{
+  return Teensy3Clock.get();
+}
+
+/*  code to process time sync messages from the serial port   */
+#define TIME_HEADER  "T"   // Header tag for serial time sync message
+
+COLD unsigned long processSyncMessage() 
+{
+    unsigned long pctime = 0L;
+    const unsigned long DEFAULT_TIME = 1357041600; // Jan 1 2013 
+
+    if (Serial.find(TIME_HEADER)) // Search for the 'T' char in incoming serial stream of chars
+    {
+        pctime = Serial.parseInt();  // following the 'T' get the digits and convert to an int
+        //return pctime;
+        //Serial.println(pctime);
+        if( pctime < DEFAULT_TIME) { // check the value is a valid time (greater than Jan 1 2013)
+            pctime = 0L; // return 0 to indicate that the time is not valid
+        }
+    }
+    return pctime;  // return will be seconds since jan 1 1970.
+}
+
+COLD void digitalClockDisplay() {
+  // digital clock display of the time
+  Serial.print(hour());
+  printDigits(minute());
+  printDigits(second());
+  Serial.print(" ");
+  Serial.print(day());
+  Serial.print(" ");
+  Serial.print(month());
+  Serial.print(" ");
+  Serial.print(year()); 
+  Serial.println(); 
+}
 
 #endif  // _SDR_RA8875_

@@ -72,7 +72,7 @@
     //  If xAxis=1  f=fs/2 in middle, f=0 on left edge    - Fc on left
     //  If xAxis=2  f=fs/2 on left edge, f=0 in middle 
     //  If xAxis=3  f=fs/2 on right edge, f=0 in middle
-    //  The default is 3 (requires no call)               2
+    //  The default is 3 (requires no call)
 
 #define FFT_SIZE                4096 //2048//1024        // need a constant for array size declarion so manually set this value here   Could try a macro later
 
@@ -83,9 +83,9 @@ void drawSpectrumFrame(uint8_t s);
 void initSpectrum(void);
 int16_t colorMap(int16_t val, int16_t color_temp);
 int16_t find_FFT_Max(uint16_t bin_min, uint16_t bin_max);
-const char* formatFreq(uint32_t Freq);
-void setActiveWindow(int16_t XL,int16_t XR ,int16_t YT ,int16_t YB);
-void setActiveWindow();
+char* formatFreq(uint32_t Freq);
+//void setActiveWindow(int16_t XL,int16_t XR ,int16_t YT ,int16_t YB);
+//void setActiveWindow();
 
 struct Spectrum_Parms {
     int16_t wf_sp_width;        // User specified active graphing area width with no padding. Max is fft_bins, can be smaller.
@@ -125,6 +125,6 @@ struct Spectrum_Parms {
 
 // use the generator function to create 1 set of data to define preset values for window size and placement.  
 // Just copy and paste from the serial terminal into each record row.
-#define PRESETS 10  // number of parameter records with our preset spectrum window values
+#define PRESETS 12  // number of parameter records with our preset spectrum window values
 
 #endif  // _SPECTRUM_RA8875_H_

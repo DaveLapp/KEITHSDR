@@ -1,14 +1,150 @@
 # KEITHSDR
 
-Teensy4.X with PJRC audio card Arduino based SDR Radio project.
+Teensy4.X with PJRC audio card Arduino based SDR Radio project
+
+## 4/22/2021
+
+    1.  Enhanced the I2C scanner to list likely address matches with known boards. I added the DupPPa I2C encoders that some of us are using to the range of 0x61 to 0x68.
+
+        **** Running I2C Scanner ****
+        Scanning...
+        I2C device found at address 0x0A  (SGTL5000)
+        I2C device found at address 0x20  (MCP23017,MCP23008,PCF8574,FXAS21002,SoilMoisture)
+        I2C device found at address 0x38  (RA8875,FT6206)
+        I2C device found at address 0x60  (MPL3115,MCP4725,MCP4728,TEA5767,Si5351)
+        I2C device found at address 0x61  (MCP4725,AtlasEzoDO,DuPPaEncoder)
+        I2C device found at address 0x62  (LidarLite,MCP4725,AtlasEzoORP,DuPPaEncoder)
+        done
+
+## 4/21/2021
+
+    1.  Onboard RTC clock now used.  If there is a USB connection and a PC side program or terminal session sends time down the USB serial port, the time message is read and is used to update the RTC time and date. The RTC clock is then read and displayed, updated every 1 second. If Ethernet NTP time is available and valid, it will update the clock periodically.
+    2.  The Serial terminal will accept a time update message in the form of 'T'+10 digits which are the seconds since Jan 1, 1970.
+    Example ->  Type in:
+        T1619000000<enter>
+    and it will respond with:
+        Time Update
+        10:13:20 21 4 2021
+
+## 4/20/2021
+
+    1. Added Waterfall style 6 and made it default.  Style 6 is a new rainbow, aka "Digipan" style using a full RGB color range.  The other styles are closer to 1 to 3 color styles.
+    2. The new waterfall auto-adjusts with the same noise floor average used by the spectrum drawing.  This means the reference level stays constant despite preamp and attenuator changes.
+    3. The new waterfall is also adjusted by the spectrum scale factor and the spectrum reference level manual settings. Raising the Reference level will increase the noise floor causing a lighter background (increased gain), lowering it reduces the noise floor (lower gain, darker background). The scale is set in the spectrum table and by vertical swipes when in panadapter mode by default. The reference level is by vertical drag by default.
+    4. Started disabling debug messages for stable sections.
+
+## 4/19/2021
+
+    1. Set larger CAT_Serial RX buffer to avoid buffer overwrites when message stack up, mostly at startup.
+    2. Added SD card support functions incouding directory and card info.
+    3. Writing table data to SD Card file RadioCfg.db for BandMem, user_setttings, and Sp_Parms_Def.
+    4. Writing #define data to RadioCfg.h.  This is only useful when transferred to the compiling PC and used in place of Radioconfig.h.  This is work in progress.  It should be done as a PC utility but it is convenient to do it here on the SD card while I sort things out.  In theory you can take this file, when done, read in the full original RadioConfig.h as normal, then read this .h file which will override #defines by testing for each variable it knows about and then does a #undef to unset appropriate #defines.
+    5. RadioCfg.cfg is intended for misc individual variables.  These ideally would go into EEPROM.  Nothing is written to this file yet, it is only created as an empty file at this point.
+    6. MF knob encoder switch press cycles through tune rates. Added 1KHz back into cycle of rates so now have 10, 100, 1000Hz active. Fine mode enables 1Hz/10hz toggle as before.
+    7. MF knob encoder switch long press swaps VFOs. The longer term goal is to enable VFO B tune, useful for split mode without needing to swapping VFOs. This requires adding a new MF_client function "VFO_B_Tune()".
+
+## 4/17-18/2021
+
+    1. Panadapter Mode additions, some for Kenwood/Elecraft CAT protocol as appropriate:
+        a. Update display to match VFO A mode, RIT, XIT, Split.
+        b. RIT and XIT are the same on a K3. RIT/XIT is set to match the radio, both + and -.  
+        c. VFO A is updated with RIT offset if enabled.
+        d. Most parameters updated only if they change.
+        e. New Modes added: AM, FM, CW-REV, DATA-REV.  They are the same as upper or lower CW or SSB and does not add demodulation AM or FM though that will occur later. For now tune carefully in SSB mode.
+        f. Meter is S-meter in RX, Power or ALC depending on radio meter mode, in TX.
+        g. Swipe up or down changes spectrum scale by 3.  Limited to a range of 10 to 80.
+        h. AGC, Filter, Mode and ANT all update to match the radio.
+        i. The IF center frequency data is used set the PLL Fc offset value to move the display to account for radio mode/filter frequency shifts. The spectrum signals are always in the correct orientation with regard to the center line.
+        j. A serial message broker looks for any incoming message and calls the matching functions to decode it.
+        k. Presently setting the K3 in AutoInfo2 mode so it sends out a message for any front panel changes. We still poll for bar graph data and certain other settings like the IF center frequency shift and mode. Mode is present in the IF; message but that message is not normally sent out by the radio until a band change. Same for IF shift info.
+        l. There is a XXXX_Request() function for every XXX_Decode() function.  If not using AI1 or AI2 (AutoInfo) modes then you must poll for info periodically. Use these xxx_Request() functions.
+
+## 4/16/2021
+
+    1. Changed Reference Level calculation to auto-set near bottom of window. Updated the default band memory database and spectrum databases to use values close to 0 vs. the previous -170ish values. Each update it looks at the 3rd FFT bin (an arbitrary choice) for a starting level and then scans all the bins for anything lower.
+    2. When in PANADAPTER config, a radio's VFO is now polled via CAT and updated on the display so follows as you tune the radio. It is set for about 500ms updates.  This is working for a K3 with 8.215MHz IF.
+    3. User Profile 2 is being used for PANADAPTER config. It sets BAND0 as eht curernt band. Can use all fields as normal.
+    4. Swipes up/dn to change bands are disabled in PANADAPER config. Encoder 2 is set to RefLvl so a drag up/dn will change ref level value.  RefLvl is now limited to +/- 50 in step=1 unit.  0 to 10 is the normal value.
+    5. Spectrum scale changes are made in the Spectrum table. 20-60 are probably good numbers to stick to. The spectrum values are not yet linked to the waterfall settings. I tweaked the waterfall gain and color for the 7" display.
+
+## 4/14/2021
+
+    1. Swipes are now limited to the spectrum hotspot area to prevent unintended band changes while operating buttons or labels.
+    2. Long press is functional. Touch the MF meter and it will toggle the AFGain and drag will adjust the setting. Long press the MF meter and it will switch from AFGain to RF gain.  Further, these are both toggles so the first touch for each gives drag the focus, the second will release drag back to default, not waiting for the normal timeout. The meter will time out back to S-meter mode as normal.
+    3. Long press will enable On/Off buttons that have adjustments to use drag and not change their On/Off state. ATT and NB are 2 good examples. You want to have these on or off but need to adjust the setting.  Long press these 2 and the MF meter changes and make your drag adjustment.
+
+## 4/13/2021
+
+    1. Added drag feature.  The Horizontal drag now follows the MF Knob (Encoder1) assignment in the database.  Vertical follows 2nd encoder assignment.
+    2. Assigned vertical drag to change the spectrum reference level
+    3. Assigned horizontal drag to MFTUNE which will slide the VFO up and down using the current tune step rate. 
+    4. Previous gestures still work. Swipe up/down to change bands, touch a spot to change to that frequency, 3 finger swipe up and down to change audio level (this takes practice), swipe left/right to change VFO by 1 tune step. The later may be obsolete now since dragging to tune works well.  The swipe left/right may be changed to spectrum span later.
+    5. Tapping the MF meter changes it to AFGain mode.  You can then drag left/right to change volume quickly, no need to find the panel with the button or look for a knob.
+    6. By adding these featues the goal is to prove that we can have a good and efficient touch control experience requiring no knobs or switches.  That means less expense, drilling, panel space, and noise from long wiring.
+
+## 4/10/2021
+
+    1. Reworked the way the buttons activate and display on the MF meter.  They are now more consistent.  All will timeout. A new button pressed will take over from the previous one immediately, shutting off the button color except for ATT and NB which will remain in their last On/Off state. All when active will have the MF knob and the MF meter focus.
+    2. Optimized the OCXO/TCXO #defines
+    3. Tested combinations of OCXO (sine and square wave), TCXO with A and C version Si5351 boards and also a ADF4351A PLL. Various degrees of spurs occur on multiples of 5MHz. The crystals, TCXOs an OCXOs are either 10Mhz or 25Mhz.  Still investigating.
+
+## 4/9/2021
+
+    1. Added new band 0 as a dummy or IF.  Shifts Band index for other bands up by 1. This also aligns with some band decoder library band definitions useful for PANADAPTER mode.
+    2. Decreased the height of the spectrum windows by 10px to make a bit more room for touchable labels just above the spectrum box.
+    3. Tagged most functions as COLD which is a macro for FLASHMEM. This locates the little used functions into FLASH memory saving RAM for variables and fast run code like the spectrum update function.  Increased RAM free space from 90K to 125K. Individual strings are wrapped with the F() macro which places those constants into PROGMEM memory area saving more RAM.
+    4. Incorporated remoteQTH.com band decoder source, heavily modified to include the minimum needed for serial CAT port. Testing with Elecraft/Kenwood config using Serial port 6.
+    5. Any encoder knob controlling a MF knob assignable function, including the MF knob itself, will now take over the S-meter and display its setting in the segments (range 0 to 10) in a different color along with a number.  After a timeout the meter is released to normal S-meter duty.
+
+## 4/8/2021
+
+    1. Fixed RA8875 mode S-meter location.
+    2. New Screen rotation define now defaults back to 0.
+    3. Working on Panadapter mode features so configuration might not always be set for Radio mode.
+
+## 4/7/2021
+
+    1. The S-meter is now a button type object so its size and location are controlled by the button table, including the outline as well. The ringMeter uses the button's x,y, and h values to write direct to the interior of the button including attempting to resize the meter best it can.
+    2. The function displayMeter(val, string) is used to update the Meter object. Since the button properties include color for background and text, any other function could use the meter button to display its own suff. For example, when the MF knob is active on RF gain, the meter can change color and style perhaps, and show the RF gain visually during adjustment. When the MF knob timer expires, the meter reverts back to S-meter default state.  As of today, only the S-meter usage is active.
+    3. Incorporated FT-817 library from same author as the Si5351mcu lib. This will enable reading and controlling a FT-8xx series radio from our SDR.  I am targeting the FT817 primarily first to use our SDR as a high quality panadapter and then as a control head.  Today there is a series of prints on the Serial terminal at startup requesting info from the radio if present.
+
+## 4/6/2021
+
+    1. Ported the S-Unit "ringMeter" over to the RA8876 and moved it into a box in the upper right corner of the 7" display. This will make room for moving a few indicators around into the empty space on this larger display. Moved the clock into the far upper right corner.
+    2. For the RA8875, the ringmeter code uses the RA8875 library.  For the RA8876 it is run as local functions.  There is very little dependency on specific display capabilities in this port so you can use this on most any display now.  All the code in is Display.cpp and is called in SMeter.cpp.
+    3. Centered VFO panel.
+
+## 4/5/2021
+
+    1. PANADAPTER Configuration settings added. There are a few PANADAPTER_xxx #defines added to RadioConfig.h along with related code changes. This configures the SDR to replace the VFO with a with a fixed LO. This means the VFO is not used and the VFO encoder knob will be reassigned for other purposes TBD.  
+    2. The displayed FFT data tuning "direction" can be inverted as many radio's IFs are inverted, meaning, if you tune up, the signal goes down at the IF output.  This can be radio and band dependent. The FFT setAxis(x) function is used to flip FFT data order to correct for this.
+    3. I am testing this on the 8.215MHz IF output of my K3. I plan to do the same with a modified FT-817 next month when that rig will be in my reach again. A serial CAT port and likely an accessory port connection will round out the feature set to make our SDR a control head with panadapter for the FT-817 and other radios if so desired.
+    4. This panadapter implementation far from complete, especially without info from a radio to be informed of band/inversion/mode/filter Fc changes. The actual frequency of the radio or transverter will be displayed in the VFO display.
+    5. If you change the SDR into DATA mode the PANADAPTER_MODE_OFFSET value is added to the LO frequency to recenter the SDR display. The K3 in DATA mode will have the IF offset by the filter Fc. Use this value as the OFFSET value.  This can be automated with a serial CAT link. For now you have to manually match modes with the radio.
+
+## 4/4-5/2021
+
+    1. Can now running 2 instances of the spectrum window. On the RA8875 I get loop time of about 110ms for 1 larger and 1 smaller window and 90ms on the RA8876 with 2 510px wide windows. That is faster than the single full size window in prior builds for 2 reasons listed below. It is now essentially video quality since there is no flicker and I can increase the refresh rate to aboput 60-70ms.
+        1. Less total pixels drawn
+            a. Erasing old lines doubles our time
+            b. 2 smaller windows have fewer total lines to draw.
+        2. I changed the method to plot the spectrum areas to be similar to the waterfall. 
+            a. For each update I fill a black rectangle on a hidden 2nd page or layer.
+            b. I then write the spectrum plot lines or bars on the 2nd page
+            c. I write the onscreen information (Peak frequency, scales, etc) to Page 2
+            d. Use BTE mem copy to move the block to Page 1 in the spectrum window
+    These changes cut the total lines/bars drawn by half and we get instant refresh so no flicker. Since the info text inside the window is written after the line draws, they are never overwritten and remain clear and flicker free also.
+    2. The RA8876 has issues with smaller size windows breaking the waterfall memory copy and writing outside the window boundaries.  Also one side waterfall will not update. So plenty of work to do on the RA8876. The RA8875 works fine.
+    3. Todays version of Spectrum_RA8875.ino has 2 lines added to draw the 2nd window frame then update it at the same time as the main window.  I will restore that to single window in the next build update but is now in the version history and you can look at past versions to see what was done.
 
 ## 4/3/2021
 
     1. Fixed Swipes when in RA8876 Configuration. Oddity in the FT5206 library which is used with the RA8876.
     2. Added a feedback beep when a button is touched. Uses the pitch and rogerBeep_Vol level value in the user_settings table.  To turn off the beep set the volume to 0.0 in the table.
-    3. Added an attempt to auto-tune a CW signal when you TouchTune in CW mode. It adds the pitch frequency to the peak signal frequency, if there is one. If not then it jsut jumps to the screen's touch point frequency.
+    3. Added an attempt to auto-tune a CW signal when you TouchTune in CW mode. It adds the pitch frequency to the peak signal frequency, if there is one. If not then it just jumps to the screen's touch point frequency.
     4. Waterfall timestamp line changed to a short tick line every 15 sceonds on left side.
-    5. Fixed display stoppage when the Menu button was pressed, a remnant of the old pop up window on that button and the band button.  The pop ups will return in a sequel.
+    5. Fixed display stoppage when the Menu or Display buttons were pressed, remnants of the old pop up window on that button and the band button.  The pop ups will return in a sequel. The Display button now switched between LINE and BAR mode cleanly.
+    6. Converted the spectrum display DOT mode to LINE mode for a more traditional spectrum image.  Loop time is around 120ms.  A lot of energy is required to clear the old vertical space before the new line is drawn. Clearing the whole rectangle then draw the 1022 line segments is fast but give a bit of flicker. The current method is smooth but overwrites the on-screen indicators so those will need to be relocated outside of the window.
 
 ## 4/2/2021
 

@@ -18,6 +18,8 @@
 #include <NativeEthernetUdp.h>
 #include <TimeLib.h>
 
+extern tmElements_t tm;
+
 #define BUFFER_SIZE         4100    
 #define RX_BUFFER_SIZE		255
 // Choose or create your desired time zone offset or use 0 for UTC.
@@ -53,7 +55,7 @@ unsigned int remoteport = MY_REMOTE_PORTNUM;    // The destination port to SENDT
 // This is for the NTP service to update the clock when connected to the internet
 unsigned int localPort_NTP = 8888;       // Local port to listen for UDP packets
 const char timeServer[] = "time.nist.gov"; // time.nist.gov NTP server
-time_t prevDisplay = 0; // When the digital clock was displayed
+extern time_t prevDisplay; // When the digital clock was displayed
 
 // function declarations
 void toggle_enet_data_out(uint8_t mode);
@@ -99,7 +101,7 @@ extern struct User_Settings user_settings[];
 EthernetUDP Udp;
 
 // Toggle UDP output data
-void toggle_enet_data_out(uint8_t mode)
+COLD void toggle_enet_data_out(uint8_t mode)
 {
 	if (mode == 1)
 	enet_data_out = 1;
@@ -121,7 +123,7 @@ void toggle_enet_data_out(uint8_t mode)
 	}
 }
 
-void teensyMAC(uint8_t *mac) 
+COLD void teensyMAC(uint8_t *mac) 
 {
   	static char teensyMac[23];
   
@@ -182,7 +184,7 @@ void teensyMAC(uint8_t *mac)
   	#endif
 }
 
-uint8_t enet_read(void)
+HOT uint8_t enet_read(void)
 {
     if (enet_ready && user_settings[user_Profile].enet_enabled)
     {
@@ -214,7 +216,7 @@ uint8_t enet_read(void)
     return 0;
 }
 
-uint8_t enet_write(uint8_t *tx_buffer, const int count)   //, uint16_t tx_count)
+HOT uint8_t enet_write(uint8_t *tx_buffer, const int count)   //, uint16_t tx_count)
 {   
 	#ifdef REMOTE_OPS
    	if (enet_ready && user_settings[user_Profile].enet_enabled && user_settings[user_Profile].enet_output)  // skip if no enet connection
@@ -230,7 +232,7 @@ uint8_t enet_write(uint8_t *tx_buffer, const int count)   //, uint16_t tx_count)
    	return 0;
 } 
 
-void enet_start(void)
+COLD void enet_start(void)
 {
 	if (!user_settings[user_Profile].enet_enabled)
 		return;
@@ -251,25 +253,25 @@ void enet_start(void)
 	enet_ready = 0;
 	if (Ethernet.hardwareStatus() == EthernetNoHardware) 
 	{
-		Serial.println("Ethernet shield was not found.  Sorry, can't run the network without hardware. :(");
+		Serial.println(F("Ethernet shield was not found.  Sorry, can't run the network without hardware. :("));
 		enet_ready = 0;  // shut down usage of enet
 	}
 	else
 	{
 		//delay(1000);
-		Serial.print("Ethernet Address = ");
+		Serial.print(F("Ethernet Address = "));
 		Serial.println(Ethernet.localIP());
 		//delay(4000);
 		if (Ethernet.linkStatus() == LinkOFF) 
 		{
-			Serial.println("Ethernet cable is not connected.");
+			Serial.println(F("Ethernet cable is not connected."));
 			enet_ready = 0;
 		}
 		else
 		{  
 			enet_ready = 1;
 			//delay(100);
-			Serial.println("Ethernet cable connected.");
+			Serial.println(F("Ethernet cable connected."));
 			// start UDP
 			Udp.begin(localPort); // Startup our SDR comms
       		Udp_NTP.begin(localPort_NTP);  // startup NTP Client comms
@@ -279,7 +281,7 @@ void enet_start(void)
 //
 /*--------------------------------------- NTP code -----------------------------------*/
 //
-time_t getNtpTime()
+COLD time_t getNtpTime()
 {
     int size = Udp_NTP.parsePacket();
     if (size >= NTP_PACKET_SIZE) 
@@ -293,15 +295,18 @@ time_t getNtpTime()
 		secsSince1900 |= (unsigned long)packetBuffer_NTP[42] << 8;
 		secsSince1900 |= (unsigned long)packetBuffer_NTP[43];
 		//Serial.println(secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR);
-		setTime(secsSince1900 - 2208988790UL + timeZone * SECS_PER_HOUR);
-		return secsSince1900 - 2208988790UL + timeZone * SECS_PER_HOUR;
+		time_t t;
+		t = secsSince1900 - 2208988790UL + timeZone * SECS_PER_HOUR;
+		Teensy3Clock.set(t); // set the RTC
+		setTime(t);			 // set the time structure
+		return t;
     }
-  	Serial.println("No NTP Response :-(");
+  	Serial.println(F("No NTP Response :-("));
   	return 0; // return 0 if unable to get the time
 }
 
 // send an NTP request to the time server at the given address
-void sendNTPpacket(const char * address) 
+COLD void sendNTPpacket(const char * address) 
 {
     // set all bytes in the buffer to 0
     memset(packetBuffer_NTP, 0, NTP_PACKET_SIZE);

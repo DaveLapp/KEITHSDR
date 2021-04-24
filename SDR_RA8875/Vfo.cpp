@@ -18,7 +18,7 @@ extern uint32_t VFOA;  // 0 value should never be used more than 1st boot before
 extern int32_t Fc;
 
 //////////////////////////Initialize VFO/DDS//////////////////////////////////////////////////////
-void initVfo(void)
+COLD void initVfo(void)
 {
     delay(100);
     
@@ -43,26 +43,29 @@ void initVfo(void)
 
         // --------------- Internal Crystal Clock Section ---------------------------------
         // Initialize the Si5351 to use a 27 MHz clock on the XO input
-        //si5351.init(SI5351_CRYSTAL_LOAD_8PF, 27000000, 0);      //set up our PLL for internal crystal or TCXO
-        si5351.init(SI5351_CRYSTAL_LOAD_0PF,  24999899, 0);
-        // --------------- End Internal Clock section -------------------------------------  
-
+        #ifndef K7MDL_OCXO
+            //si5351.init(SI5351_CRYSTAL_LOAD_8PF, 27000000, 0);      //set up our PLL for internal crystal or TCXO
+            si5351.init(SI5351_CRYSTAL_LOAD_0PF,  24999899, 0);
+            //si5351.init(SI5351_CRYSTAL_LOAD_0PF,  10000000, 0);
+            si5351.set_clock_source(SI5351_CLK0, SI5351_CLK_SRC_XTAL);
+            // --------------- End Internal Clock section -------------------------------------  
+        #endif      
         // ----  OR  ------//
         
         #ifdef K7MDL_OCXO
-        // --------------- External Reference CLock Section -------------------------------
-        //Initialize the Si5351 to use an external clock like a 10Mhz OCXO
-        si5351.init(SI5351_CRYSTAL_LOAD_0PF, 0, 0);               
-        //This section is for external ref clock
-        si5351.set_clock_source(SI5351_CLK0, SI5351_CLK_SRC_CLKIN);    // Use the OCXO for Clock 0 output                       
-        // Set the CLKIN reference frequency to 10 MHz
-        si5351.set_ref_freq(10000000UL, SI5351_PLL_INPUT_CLKIN);
-        // Apply a correction factor to CLKIN
-        si5351.set_correction(0, SI5351_PLL_INPUT_CLKIN);
-        // Set PLLA and PLLB to use the signal on CLKIN instead of the XTAL
-        si5351.set_pll_input(SI5351_PLLA, SI5351_PLL_INPUT_CLKIN);
-        si5351.set_pll_input(SI5351_PLLB, SI5351_PLL_INPUT_CLKIN);
-        // ------------   ---End Ext Clock section ----------------------------------------
+            // --------------- External Reference CLock Section -------------------------------
+            //Initialize the Si5351 to use an external clock like a 10Mhz OCXO
+            si5351.init(SI5351_CRYSTAL_LOAD_0PF, 0, 0);               
+            //This section is for external ref clock
+            si5351.set_clock_source(SI5351_CLK0, SI5351_CLK_SRC_CLKIN);    // Use the OCXO for Clock 0 output                       
+            // Set the CLKIN reference frequency to 10 MHz
+            si5351.set_ref_freq(10000000UL, SI5351_PLL_INPUT_CLKIN);
+            // Apply a correction factor to CLKIN
+            si5351.set_correction(0, SI5351_PLL_INPUT_CLKIN);
+            // Set PLLA and PLLB to use the signal on CLKIN instead of the XTAL
+            si5351.set_pll_input(SI5351_PLLA, SI5351_PLL_INPUT_CLKIN);
+            si5351.set_pll_input(SI5351_PLLB, SI5351_PLL_INPUT_CLKIN);
+            // ------------   ---End Ext Clock section ----------------------------------------
         #endif // K7MDL_OCXO
 
         // Below is common to both Ext Clk and Internal Xtal
@@ -84,14 +87,14 @@ void initVfo(void)
         //si5351.init();  // Set this to 25MHz or 27MHz depending on what your PLL uses.
         #ifdef si5351_XTAL_25MHZ
           //si5351.init(25000000);
-          si5351.init(24999899);
+          si5351.init(24999899);          
         #else
           si5351.init(27000000);
         #endif // si5351_XTAL_IS_25MHZ
 
         /// Si5351mcu library modified by K7MDL to accept load capacitor setting.  Comment this out for standard library        
         #ifdef si5351_TCXO
-        si5351.load_c(SI5351_CRYSTAL_LOAD_0PF);  // this is for replacing a crystal with a TCXO
+            si5351.load_c(SI5351_CRYSTAL_LOAD_0PF);  // this is for replacing a crystal with a TCXO
         #endif //si5351_TCXO
         
         // The lines below are stanard to any crystal
@@ -106,10 +109,10 @@ void initVfo(void)
     #endif
 }
 
-void SetFreq(uint32_t Freq)
-{ 
+COLD void SetFreq(uint32_t Freq)
+{
     #ifdef OCXO_10MHZ
-        si5351.set_freq((Freq) *400ULL, SI5351_CLK0); // generating 4 x frequency ... set 400ULL to 100ULL for 1x frequency
+        si5351.set_freq((Freq+Fc) *400ULL, SI5351_CLK0); // generating 4 x frequency ... set 400ULL to 100ULL for 1x frequency
     #else
         si5351.setFreq(0, (Freq+Fc)*4); // use 4x for QRP-Labs RX vboard and some others. Use 1x if using 2 outputs shifted by 90 degrees 
     #endif

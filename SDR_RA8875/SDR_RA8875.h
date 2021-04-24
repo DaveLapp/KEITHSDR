@@ -16,6 +16,7 @@
 #include <T4_PowerButton.h>     // https://github.com/FrankBoesing/T4_PowerButton for the FlexInfo() and Hardfault reporting tools
 //#include "avr/pgmspace.h"
 #include <SPI.h>                // included with Arduino
+#include <SD.h>                 // included with Arduino
 #include <Wire.h>               // included with Arduino
 #include <WireIMXRT.h>          // gets installed with wire.h
 #include <WireKinetis.h>        // included with Arduino
@@ -28,6 +29,17 @@
 #include <TimeLib.h>            // TODO  - list where to find this
 #include <ili9488_t3_font_Arial.h>      // https://github.com/PaulStoffregen/ILI9341_t3
 #include <ili9488_t3_font_ArialBold.h>  // https://github.com/PaulStoffregen/ILI9341_t3
+#include <TimeLib.h>
+//#include <glcdfont.c>
+//#include <ILI9341_fonts.h>
+//#include <FiraCode_mono_14.c>   //minipixel
+//#include <fonts/FiraCode_mono_16.c>
+//#include <fonts/FiraCode_mono_18.c>
+//#include <fonts/FiraCode_mono_20.c>
+//#include <fonts/FiraCode_mono_24.c>
+//#include <fonts/FiraCode_mono_28.c>
+//#include <fonts/FiraCode_mono_32.c>
+//#include <fonts/FiraCode_mono_40.c>
 // Below are local project files
 #include "SDR_Network.h"        // for ethernet UDP remote control and monitoring
 #include "Spectrum_RA8875.h"    // spectrum
@@ -42,6 +54,7 @@
 #include "Controls.h"
 #include "UserInput.h"          // include after Spectrum_RA8875.h and Display.h
 #include "Bandwidth2.h"
+#include "SD_Card.h"
 
 ///////////////////////Set up global variables for Frequency, mode, bandwidth, step
 #define BAND0       0       // Band slot ID
@@ -66,9 +79,13 @@
 //  Pretty much every global variable that controls a setting is here in a table of some sort. 
 //
 #define CW          0
+#define CW_REV      6
 #define LSB         1     
 #define USB         2
 #define DATA        3
+#define DATA_REV    7
+#define FM          4
+#define AM          5
 
 #define ON          1
 #define OFF         0
@@ -126,10 +143,46 @@
 #define NTCH1       1
 #define NTCH2       2
 
+// Some defines for ease of use 
+#define myDARKGREY  31727u
+// From RA8876_t3/RA8876Registers.h
+#define BLACK		    0x0000
+#define WHITE		    0xffff
+#define RED		  	  0xf800
+#define LIGHTRED	  0xfc10
+#define CRIMSON		  0x8000
+#define GREEN		    0x07e0
+#define PALEGREEN	  0x87f0
+#define DARKGREEN	  0x0400
+#define BLUE		    0x001f
+#define LIGHTBLUE	  0x051f
+#define SKYBLUE		  0x841f
+#define DARKBLUE	  0x0010
+#define YELLOW		  0xffe0
+#define LIGHTYELLOW	0xfff0
+#define DARKYELLOW	0x8400 // mustard
+#define CYAN		    0x07ff
+#define LIGHTCYAN	  0x87ff
+#define DARKCYAN	  0x0410
+#define MAGENTA		  0xf81f
+#define VIOLET		  0xfc1f
+#define BLUEVIOLET	0x8010
+#define ORCHID		  0xA145 
+// Otehr sources of RGB coplpr definitions
+#define NAVY        0x000F
+#define MAROON      0x7800
+#define PURPLE      0x780F
+#define OLIVE       0x7BE0
+#define LIGHTGREY   0xC618
+#define DARKGREY    0x7BEF
+#define ORANGE      0xFD20
+#define GREENYELLOW 0xAFE5
+#define PINK        0xF81F
+
 // This group defines thw number of records in each structure
-#define MODES_NUM   4
+#define MODES_NUM   8
 #define FREQ_DISP_NUM  4
-#define BANDS       11
+#define BANDS       12
 #define XVTRS       12
 #define TS_STEPS    6
 #define FILTER      9
@@ -137,12 +190,13 @@
 #define NB_SET_NUM  7
 #define USER_SETTINGS_NUM 3
 #define LABEL_NUM   20      // number of labels in the table
-#define STD_BTN_NUM 32      // number of buttons in the table
+#define STD_BTN_NUM 33      // number of buttons in the table
 
 // Alternative to #define XXX_BTN is use "const int XXX_BTN" or enum to create index names to the table.
 // enum Button_List {FN_BTN, MODE_BTN, FILTER_BTN, ATTEN_BTN, PREAMP_BTN, };
 // using #define method as it is easiet to relate the purpose and more obvious which row it is mapped to.
-#define PANEL_ROWS  7       // 5-2 = Panel #.  0 is disable, 1 is not used, 2 3, and 4 values are Panel to display.
+#define PANEL_ROWS  7       // Set Number of panels + 2.  0 is disable, 1 is not used.
+                            // numbers 2 and up are the panel index number (panel number -2) for the panel to display.
 //  There are 6 100px wide buttons that can swap places, enabled/dispable by the function button for a row
 //Anchor buttons normally stay put
 //Panel 1  Fn is an anchor, the rest swap out
@@ -183,7 +237,8 @@
 
 // Not in a Panel
 #define UTCTIME_BTN 30      // NTP UTC time when ethernet (and internet) is available 
-#define SPECTUNE_BTN 31     // Convertes a touch in the spectrum window to a frequency to tune too.
+#define SMETER_BTN  31      // Box for the Smeter.  Can be a meter for any use.  Can touch the meter to configure maybe
+#define SPECTUNE_BTN 32     // Convertes a touch in the spectrum window to a frequency to tune too.
 
 // The #define button numbers act as the ID of possible owners of MF knob services
 #define MFTUNE      50      // Fake button so the MF knob can tune the VFO since there is no button
@@ -253,7 +308,7 @@ struct Standard_Button {
  //DisplayXXX() also looks at SHOW to decide whether to draw something. 
  //
 struct Label {
-    uint8_t  enabled;       // Not used for Labels today. Cn be used for state tracking. 
+    uint8_t  enabled;       // Not used for Labels today. Can be used for state tracking. 
     uint8_t  show;          // ON= Show key. 0 = Hide key. Used to Hide a label without disabling it.
     uint16_t x;             // coordinates used by both touch and display systems
 	uint16_t y;
@@ -394,5 +449,9 @@ enum Label_List {BAND_LBL, MODE_LBL, FILTER_LBL, RATE_LBL, AGC_LBL, ANT_LBL, ATT
 #define REFLVL_LBL  19      // not implemented yet
 #define SPOT_LBL    20      // not implemented yet
 */
+
+// Simple ways to designate functions to run out of fast or slower memory to help save RAM
+#define HOT FASTRUN    __attribute__((hot))
+#define COLD FLASHMEM  __attribute__((cold))
 
 #endif //_SDR_RA8875_H_
